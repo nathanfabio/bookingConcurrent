@@ -8,3 +8,4 @@ the history is part of the learning value.
 | # | Title | Status |
 |---|-------|--------|
 | 0001 | [Hexagonal architecture, modular monolith, consumer-owned ports](0001-hexagonal-architecture.md) | Accepted |
+| 0002 | [Hold atomicity: Lua scripts, hold tokens, single-instance Redis](0002-hold-atomicity-lua.md) | Accepted |
