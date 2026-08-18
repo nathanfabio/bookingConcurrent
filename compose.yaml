@@ -1,0 +1,68 @@
+# Infra dependencies for local development (CLAUDE.md §11).
+# `make up` brings everything up; `go run ./cmd/api` runs on the host against it.
+#
+# The credentials below are THROWAWAY local-dev defaults shared with .env.example.
+# They are not secrets in the §10 sense (no external access, no real data) —
+# but never reuse them anywhere else, and never put real credentials here.
+name: bookingconcurrent
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Visualize hold keys and their TTLs while developing (CLAUDE.md §11):
+  # http://localhost:8081
+  redis-commander:
+    image: ghcr.io/joeferner/redis-commander:latest
+    environment:
+      REDIS_HOSTS: "local:redis:6379"
+    ports:
+      - "8081:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: booking
+      POSTGRES_PASSWORD: booking-dev-password
+      POSTGRES_DB: booking
+    ports:
+      # Host-side 5433: a local host Postgres commonly owns 5432 already.
+      # Container-side stays 5432; only the host mapping shifts.
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking -d booking"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - booking_pgdata:/var/lib/postgresql/data
+
+  # Not consumed by code until M6 (messaging); started from day one so the
+  # stack is stable and the management UI is available at http://localhost:15672
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: booking
+      RABBITMQ_DEFAULT_PASS: booking-dev-password
+      RABBITMQ_DEFAULT_VHOST: booking
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  booking_pgdata:

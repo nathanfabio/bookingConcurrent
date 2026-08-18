@@ -1,0 +1,81 @@
+version: "2"
+
+# Lint policy notes:
+# - depguard enforces the hexagonal dependency rules MECHANICALLY instead of
+#   relying on review discipline (CLAUDE.md §1, §14):
+#     * domain imports nothing infra-shaped (no net/http, drivers, otel, adapters)
+#     * application imports no adapters and no transport/driver packages
+#     * platform imports no adapters (composition happens in cmd/)
+# - The default linter set (errcheck, govet, staticcheck, unused) plus a few
+#   cheap, high-signal additions stays intentionally small; grow it only when
+#   a real bug class shows up.
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - depguard
+    - misspell
+    - gosec
+  settings:
+    depguard:
+      rules:
+        domain-purity:
+          files:
+            - "**/internal/domain/**"
+          deny:
+            - pkg: "github.com/nathanfabio/bookingConcurrent/internal/adapters"
+              desc: "domain must never import adapters (CLAUDE.md §1)"
+            - pkg: "github.com/nathanfabio/bookingConcurrent/internal/platform"
+              desc: "domain must never import platform infrastructure"
+            - pkg: "^net/http$"
+              desc: "domain is transport-agnostic"
+            - pkg: "^database/sql$"
+              desc: "domain has no persistence dependency"
+            - pkg: "^github.com/jackc"
+              desc: "no Postgres driver in domain"
+            - pkg: "^github.com/redis"
+              desc: "no Redis client in domain"
+            - pkg: "^github.com/rabbitmq"
+              desc: "no broker client in domain"
+            - pkg: "^go.opentelemetry.io"
+              desc: "domain is observability-agnostic"
+        application-purity:
+          files:
+            - "**/internal/application/**"
+          deny:
+            - pkg: "github.com/nathanfabio/bookingConcurrent/internal/adapters"
+              desc: "application depends on ports, not adapter implementations"
+            - pkg: "^net/http$"
+              desc: "use cases are transport-agnostic; handlers live in adapters/http"
+            - pkg: "^github.com/jackc"
+              desc: "use cases talk to store ports, not drivers"
+            - pkg: "^github.com/redis"
+              desc: "use cases talk to store ports, not drivers"
+            - pkg: "^github.com/rabbitmq"
+              desc: "use cases talk to publisher ports, not broker clients"
+        platform-no-adapters:
+          files:
+            - "**/internal/platform/**"
+          deny:
+            - pkg: "github.com/nathanfabio/bookingConcurrent/internal/adapters"
+              desc: "platform is wiring-free infrastructure; adapters are injected in cmd/"
+    gosec:
+      excludes:
+        # G115 integer overflow conversions are noise at this codebase's scale;
+        # re-enable if we start doing untrusted arithmetic.
+        - G115
+  exclusions:
+    rules:
+      # G101 ("hardcoded credentials") fires on test fixtures that merely
+      # LOOK credential-shaped (e.g. amqp://user:pass@host). Real secrets in
+      # tests would be caught by review + lint-guards; this heuristic isn't
+      # the right net for fixture strings.
+      - path: _test\.go
+        text: "G101"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
