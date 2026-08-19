@@ -43,6 +43,13 @@ jobs:
       POSTGRES_USER: booking
       POSTGRES_PASSWORD: booking-dev-password
       POSTGRES_DB: booking_test
+      TEST_POSTGRES_DB: booking_test
+      # Non-secret CI placeholders so config.Load() succeeds. The fake
+      # payment provider is pinned: CI must stay physically incapable of
+      # talking to a real gateway (CLAUDE.md §7).
+      RABBITMQ_URL: amqp://ci:ci@localhost:5672/ci
+      AUTH_JWT_SECRET: ci-placeholder-not-a-real-secret-000
+      PAYMENT_PROVIDER: fake
 
     steps:
       - uses: actions/checkout@v4
@@ -59,11 +66,19 @@ jobs:
       - name: Repo hygiene guards
         run: bash scripts/lint-guards.sh
 
+      - name: sqlc check (generated code in sync with queries)
+        run: make sqlc-check
+
       - name: Build
         run: go build ./...
 
       - name: Vet
         run: go vet ./...
+
+      # Migrations run as an EXPLICIT step in CI (CLAUDE.md §2): the
+      # auto-migrate at boot is a dev-only convenience.
+      - name: Apply migrations
+        run: go run ./cmd/migrate up
 
       # The race detector is non-negotiable for this repo (CLAUDE.md §9):
       # the concurrency core is the point of the project.

@@ -1,0 +1,22 @@
+# sqlc generates type-safe Go from hand-written SQL (ADR 0003).
+#
+# The SQL stays the artifact: queries live in db/queries/*.sql and the
+# schema is inferred from the SAME goose migrations the server runs, so
+# generated code and the live schema cannot drift. `make sqlc` regenerates;
+# CI runs `make sqlc-check` and fails if generated code is stale.
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "db/queries"
+    schema: "migrations"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "internal/adapters/postgres/sqlcgen"
+        sql_package: "pgx/v5"
+        # pgx/v5 maps timestamptz to time.Time natively; uuid gets a less
+        # ergonomic default, so pin it to string — IDs travel as strings
+        # through the domain and the API.
+        overrides:
+          - db_type: "uuid"
+            go_type: "string"

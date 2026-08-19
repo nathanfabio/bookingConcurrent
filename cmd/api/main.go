@@ -16,6 +16,8 @@ import (
 	"time"
 
 	httpadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/http"
+	postgresadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/postgres"
+	redisadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/redis"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/config"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/logger"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/middleware"
@@ -55,11 +57,46 @@ func run() error {
 		return fmt.Errorf("telemetry setup: %w", err)
 	}
 
+	// --- durable store ---------------------------------------------------------
+	pool, err := postgresadapter.NewPool(ctx, cfg.Postgres)
+	if err != nil {
+		return fmt.Errorf("postgres: %w", err)
+	}
+	defer pool.Close()
+
+	if cfg.Env == config.EnvDevelopment {
+		// Dev-only convenience (CLAUDE.md §2): auto-migrate at boot so a dev
+		// box is never silently behind. CI/production migrate explicitly via
+		// `go run ./cmd/migrate up`.
+		applied, err := postgresadapter.MigrateUp(ctx, cfg.Postgres)
+		if err != nil {
+			return fmt.Errorf("auto-migrate: %w", err)
+		}
+		if applied > 0 {
+			log.Info("dev auto-migration applied migrations", "count", applied)
+		}
+		if err := postgresadapter.SeedDev(ctx, pool); err != nil {
+			return fmt.Errorf("dev seed: %w", err)
+		}
+	}
+
+	// --- transient hold store ----------------------------------------------------
+	redisClient := redisadapter.NewClient(cfg.Redis)
+	defer func() { _ = redisClient.Close() }()
+
+	// --- routes ------------------------------------------------------------------
 	mux := http.NewServeMux()
-	// Liveness: the process is up. Readiness: dependency checks join in M2;
-	// until then the skeleton reports ready with an empty checks map.
 	mux.Handle("GET /healthz", httpadapter.HealthzHandler())
-	mux.Handle("GET /readyz", httpadapter.ReadyzHandler(nil))
+	// Readiness checks the two stores this process cannot live without.
+	// The broker is deliberately NOT here (from M6 onward): the outbox is
+	// precisely the buffer that lets the API keep taking bookings while the
+	// broker is down, so failing readiness on broker trouble would be wrong.
+	mux.Handle("GET /readyz", httpadapter.ReadyzHandler([]httpadapter.ReadinessCheck{
+		{Name: "postgres", Check: pool.Ping},
+		{Name: "redis", Check: func(ctx context.Context) error {
+			return redisClient.Ping(ctx).Err()
+		}},
+	}))
 
 	// Middleware chain, applied innermost-first so the OUTER order matches
 	// CLAUDE.md §5: recovery → request ID → logging → handler.

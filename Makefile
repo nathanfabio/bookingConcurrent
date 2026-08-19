@@ -12,6 +12,13 @@ ifeq ($(GOLANGCI_LINT),)
 GOLANGCI_LINT := $(shell go env GOPATH)/bin/golangci-lint
 endif
 
+# Prefer sqlc on PATH; fall back to `go run` with a pinned version so the
+# generated code is reproducible without a manual install.
+SQLC := $(shell command -v sqlc 2>/dev/null)
+ifeq ($(SQLC),)
+SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+endif
+
 .PHONY: help
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -44,6 +51,24 @@ test-race: ## Run all tests with the race detector (CI runs this too)
 lint: ## golangci-lint + repo hygiene guards (no secrets in source, domain purity)
 	$(GOLANGCI_LINT) run ./...
 	bash scripts/lint-guards.sh
+
+.PHONY: migrate
+migrate: ## Apply database migrations explicitly (dev auto-migrates at boot)
+	@test -f .env || { echo "no .env found — run: cp .env.example .env" >&2; exit 1; }
+	set -a; source ./.env; set +a; exec go run ./cmd/migrate up
+
+.PHONY: migrate-status
+migrate-status: ## Show applied/pending migrations
+	@test -f .env || { echo "no .env found — run: cp .env.example .env" >&2; exit 1; }
+	set -a; source ./.env; set +a; exec go run ./cmd/migrate status
+
+.PHONY: sqlc
+sqlc: ## Regenerate type-safe query code from db/queries (after editing SQL)
+	$(SQLC) generate
+
+.PHONY: sqlc-check
+sqlc-check: ## Fail if generated query code is stale (run in CI)
+	$(SQLC) diff
 
 .PHONY: run
 run: ## Run the API locally (requires .env and `make up`)
