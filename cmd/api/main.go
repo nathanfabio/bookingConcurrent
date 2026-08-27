@@ -18,6 +18,7 @@ import (
 	httpadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/http"
 	postgresadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/postgres"
 	redisadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/redis"
+	appauth "github.com/nathanfabio/bookingConcurrent/internal/application/auth"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/config"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/logger"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/middleware"
@@ -64,6 +65,21 @@ func run() error {
 	}
 	defer pool.Close()
 
+	// --- auth (M3) -------------------------------------------------------------
+	// The argon2id hasher serves both the dev seed (below) and the live
+	// service. Production parameters — login latency is a feature, not a
+	// bug (ADR 0005). The issuer signs/valids the short-lived JWT access
+	// tokens; refresh tokens never pass through it (ADR 0004).
+	hasher := appauth.NewArgon2Hasher(appauth.DefaultArgon2Params)
+	issuer := appauth.NewTokenIssuer(cfg.Auth.JWTSecret, cfg.ServiceName, cfg.Auth.AccessTokenTTL)
+	authService := appauth.NewService(
+		postgresadapter.NewUserRepo(pool),
+		postgresadapter.NewRefreshTokenRepo(pool),
+		hasher, issuer,
+		cfg.Auth.AccessTokenTTL, cfg.Auth.RefreshTokenTTL,
+	)
+	secureCookies := cfg.Env.IsProduction()
+
 	if cfg.Env == config.EnvDevelopment {
 		// Dev-only convenience (CLAUDE.md §2): auto-migrate at boot so a dev
 		// box is never silently behind. CI/production migrate explicitly via
@@ -75,7 +91,7 @@ func run() error {
 		if applied > 0 {
 			log.Info("dev auto-migration applied migrations", "count", applied)
 		}
-		if err := postgresadapter.SeedDev(ctx, pool); err != nil {
+		if err := postgresadapter.SeedDev(ctx, pool, hasher.Hash); err != nil {
 			return fmt.Errorf("dev seed: %w", err)
 		}
 	}
@@ -98,9 +114,27 @@ func run() error {
 		}},
 	}))
 
+	// --- auth routes (M3) --------------------------------------------------------
+	// register/login/refresh/logout are PUBLIC: they are how you obtain or
+	// recover credentials. /auth/me is the one PROTECTED route — it wraps
+	// the handler in the auth middleware so the user ID comes from the
+	// verified token, never the request body (CLAUDE.md §3). Auth is
+	// applied per route; booking routes gain the same wrapper in M4.
+	validate := func(ctx context.Context, token string) (string, error) {
+		return issuer.ValidateAccessToken(token)
+	}
+	authMiddleware := middleware.Auth(validate, httpadapter.WriteUnauthorized)
+
+	mux.Handle("POST /auth/register", httpadapter.RegisterHandler(authService, cfg.Auth.RefreshTokenTTL, secureCookies))
+	mux.Handle("POST /auth/login", httpadapter.LoginHandler(authService, cfg.Auth.RefreshTokenTTL, secureCookies))
+	mux.Handle("POST /auth/refresh", httpadapter.RefreshHandler(authService, cfg.Auth.RefreshTokenTTL, secureCookies))
+	mux.Handle("POST /auth/logout", httpadapter.LogoutHandler(authService, secureCookies))
+	mux.Handle("GET /auth/me", authMiddleware(httpadapter.MeHandler(authService)))
+
 	// Middleware chain, applied innermost-first so the OUTER order matches
 	// CLAUDE.md §5: recovery → request ID → logging → handler.
-	// (Tracing, CORS, rate limiting, and auth join in later milestones.)
+	// Auth is applied per-route above (M3); tracing, CORS, and rate
+	// limiting join in later milestones.
 	var handler http.Handler = mux
 	handler = middleware.Logging(handler)
 	handler = middleware.RequestID(handler)

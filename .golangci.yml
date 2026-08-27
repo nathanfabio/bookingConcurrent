@@ -44,6 +44,11 @@ linters:
         application-purity:
           files:
             - "**/internal/application/**"
+            # Test files are exempt: unit tests exercise use cases through
+            # the in-memory fakes in adapters/memory (CLAUDE.md §9), which
+            # necessarily points the TEST code at an adapter. Production
+            # application files stay adapter-free.
+            - "!**/internal/application/**/*_test.go"
           deny:
             - pkg: "github.com/nathanfabio/bookingConcurrent/internal/adapters"
               desc: "application depends on ports, not adapter implementations"

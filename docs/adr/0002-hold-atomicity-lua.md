@@ -66,7 +66,7 @@ so redis-commander renders them field-by-field during development.
 hold's TTL lapses, the seat/session keys vanish but the ZSET members
 remain until an explicit `ZREM`. The hold-limit count therefore includes
 stale entries until the expiry sweeper (M4) reconciles them. This is the
-"reconcilable state" choice from ADR 0007's subject area: a ZSET's
+"reconcilable state" choice from ADR 0006's subject area: a ZSET's
 membership can be audited against reality (does the session still exist?)
 and repaired; a counter that drifts on missed decrements contains no
 information to reconstruct itself from.

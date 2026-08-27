@@ -14,10 +14,12 @@ import (
 
 // Error codes form the stable, machine-readable half of the error contract.
 // Messages are for humans and may change; codes are what clients branch on.
-// M3/M4 extend this set as domain errors get mapped.
 const (
-	CodeInternal = "internal_error"
-	CodeNotFound = "not_found"
+	CodeInternal     = "internal_error"
+	CodeNotFound     = "not_found"
+	CodeUnauthorized = "unauthorized"     // M3: auth required / credentials rejected
+	CodeValidation   = "validation_error" // M3: request body failed validation
+	CodeConflict     = "conflict"         // M3: duplicate email on register
 )
 
 // errorResponse is the single JSON shape every error path writes
@@ -55,4 +57,12 @@ func WriteError(w http.ResponseWriter, status int, code, message string) {
 // server-side log with the request ID for correlation.
 func WriteInternalError(w http.ResponseWriter, r *http.Request, recovered any) {
 	WriteError(w, http.StatusInternalServerError, CodeInternal, "internal server error")
+}
+
+// WriteUnauthorized is the 401 writer injected into middleware.Auth by the
+// composition root. Like WriteInternalError it keeps the message generic:
+// distinguishing "no token" from "bad signature" from "expired" in the
+// response would hand attackers a debugging tool for free (ADR 0004).
+func WriteUnauthorized(w http.ResponseWriter, r *http.Request) {
+	WriteError(w, http.StatusUnauthorized, CodeUnauthorized, "authentication required")
 }

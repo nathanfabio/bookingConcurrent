@@ -34,17 +34,17 @@ func Logging(next http.Handler) http.Handler {
 
 		defer func() {
 			if p := recover(); p != nil {
-				logRequest(r, http.StatusInternalServerError, time.Since(start))
+				logRequest(r, http.StatusInternalServerError, time.Since(start), rec.userID)
 				panic(p) // not ours to handle — Recovery is outside us
 			}
-			logRequest(r, rec.status(), time.Since(start))
+			logRequest(r, rec.status(), time.Since(start), rec.userID)
 		}()
 
 		next.ServeHTTP(rec, r)
 	})
 }
 
-func logRequest(r *http.Request, status int, dur time.Duration) {
+func logRequest(r *http.Request, status int, dur time.Duration, userID string) {
 	attrs := []slog.Attr{
 		slog.String("method", r.Method),
 		slog.String("path", r.URL.Path),
@@ -54,8 +54,15 @@ func logRequest(r *http.Request, status int, dur time.Duration) {
 	if id := RequestIDFromContext(r.Context()); id != "" {
 		attrs = append(attrs, slog.String("request_id", id))
 	}
-	if uid, ok := UserIDFromContext(r.Context()); ok {
-		attrs = append(attrs, slog.String("user_id", uid))
+	// The authenticated user ID normally arrives via the recorder's side
+	// channel (set by the auth middleware, which runs INSIDE Logging and so
+	// cannot propagate a context value back out). The context is the
+	// fallback for setups where auth wraps Logging instead.
+	if userID == "" {
+		userID, _ = UserIDFromContext(r.Context())
+	}
+	if userID != "" {
+		attrs = append(attrs, slog.String("user_id", userID))
 	}
 
 	args := make([]any, len(attrs))
@@ -71,10 +78,22 @@ func logRequest(r *http.Request, status int, dur time.Duration) {
 
 // statusRecorder captures the response status without disturbing the
 // wrapped writer's behavior (including http.Flusher when supported).
+//
+// It also carries the authenticated user ID as a side channel. CLAUDE.md §5
+// puts Logging OUTSIDE Auth, but Go contexts only flow inward: the auth
+// middleware's r.WithContext(...) is invisible to this outer deferred log.
+// So Auth type-asserts the writer to the setUserID interface below and
+// hands the ID over directly. Same package, so the interface stays private.
 type statusRecorder struct {
 	http.ResponseWriter
 	code        int
 	wroteHeader bool
+	userID      string
+}
+
+// setUserID is the side channel the Auth middleware writes through.
+func (r *statusRecorder) setUserID(id string) {
+	r.userID = id
 }
 
 func (r *statusRecorder) WriteHeader(code int) {

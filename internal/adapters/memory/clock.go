@@ -50,3 +50,12 @@ func (c *ManualClock) Advance(d time.Duration) {
 	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
 }
+
+// Set moves the clock to an absolute instant. Tests use it to recover
+// after advancing past an expiry they wanted to observe. Concurrent calls
+// are safe.
+func (c *ManualClock) Set(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = t
+}

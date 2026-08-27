@@ -39,13 +39,19 @@ fi
 # --- Guard 3: adapters importing sibling adapters ----------------------------
 # Each adapter implements an application-owned interface; adapters never
 # compose each other directly. (Self-imports are fine and skipped.)
+# Test files are exempt: handler tests exercise real use cases through the
+# shared in-memory fakes in adapters/memory (CLAUDE.md §9). The rule
+# polices PRODUCTION wiring, where adapters must stay independent.
 for dir in internal/adapters/*/; do
   [ -d "$dir" ] || continue
   name=$(basename "$dir")
   for other in internal/adapters/*/; do
     othername=$(basename "$other")
     [ "$name" = "$othername" ] && continue
-    if grep -RIn "bookingConcurrent/internal/adapters/$othername" --include='*.go' "$dir"; then
+    hits=$(grep -RIn "bookingConcurrent/internal/adapters/$othername" --include='*.go' "$dir" \
+      | grep -vE '_test\.go:' || true)
+    if [ -n "$hits" ]; then
+      echo "$hits"
       echo "FAIL: adapter '$name' imports sibling adapter '$othername' (CLAUDE.md §1)" >&2
       fail=1
     fi
