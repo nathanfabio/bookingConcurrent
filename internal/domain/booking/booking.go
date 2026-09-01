@@ -28,6 +28,30 @@ var (
 	// ErrNotHoldOwner: a hold exists for this session but belongs to a
 	// different user.
 	ErrNotHoldOwner = errors.New("booking: not the owner of this hold")
+	// ErrSeatAlreadyBooked: a CONFIRMED booking already exists for the seat.
+	// Distinct from ErrSeatAlreadyHeld: holds expire, bookings don't. The
+	// pre-hold check is the phantom-hold defense; the partial unique index
+	// is the arbiter that makes this error authoritative (ADR 0006).
+	ErrSeatAlreadyBooked = errors.New("booking: seat is already booked")
+	// ErrHoldExpired: the hold exists but its TTL window has passed. The
+	// domain check (Hold.CanBeConfirmed) catches the sub-second window where
+	// the store still serves the hold but the business rule says no. The
+	// HTTP layer maps this to the same 404 as ErrHoldNotFound — otherwise
+	// the same user-visible event would get two different responses
+	// depending on sub-second timing (ADR 0006).
+	ErrHoldExpired = errors.New("booking: hold has expired")
+	// ErrSessionAlreadyConfirmed: this hold session already produced a
+	// booking row. An idempotency signal, not a client error: the use case
+	// recovers by returning the existing booking (ADR 0006).
+	ErrSessionAlreadyConfirmed = errors.New("booking: session already has a booking")
+	// ErrBookingNotFound: no booking row exists for the lookup key. Port
+	// completeness for BookingStore.GetBySession; the use case turns "no
+	// row" during conflict recovery into the original conflict error.
+	ErrBookingNotFound = errors.New("booking: booking not found")
+	// ErrSeatOutOfRange: the seat is well-formed but outside the screening's
+	// geometry. Rejected by the use case BEFORE any store is touched
+	// (CLAUDE.md §4).
+	ErrSeatOutOfRange = errors.New("booking: seat is outside the screening geometry")
 )
 
 // Status is the typed state of a confirmed booking. A bare string with magic
@@ -49,6 +73,33 @@ const (
 func (s Status) Valid() bool {
 	switch s {
 	case StatusConfirmed, StatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// SeatStatus is the typed per-seat state the seat-map endpoint renders
+// (CLAUDE.md §4: available + held + confirmed, computed server-side). Same
+// typed-constant discipline as Status: no bare strings scattered through
+// handlers.
+type SeatStatus string
+
+const (
+	// SeatStatusAvailable: no live hold, no confirmed booking.
+	SeatStatusAvailable SeatStatus = "available"
+	// SeatStatusHeld: a live Redis hold exists, no confirmed booking.
+	SeatStatusHeld SeatStatus = "held"
+	// SeatStatusBooked: a confirmed Postgres booking exists. Postgres wins
+	// over any stale hold — availability is computed Postgres-first
+	// (ADR 0006), so a seat is booked even if a phantom hold lingers.
+	SeatStatusBooked SeatStatus = "booked"
+)
+
+// Valid reports whether s is a known seat-map status.
+func (s SeatStatus) Valid() bool {
+	switch s {
+	case SeatStatusAvailable, SeatStatusHeld, SeatStatusBooked:
 		return true
 	default:
 		return false

@@ -99,8 +99,27 @@ func TestBookingCanBeCancelled(t *testing.T) {
 	}
 }
 
+func TestSeatStatusValid(t *testing.T) {
+	valid := []SeatStatus{SeatStatusAvailable, SeatStatusHeld, SeatStatusBooked}
+	for _, s := range valid {
+		if !s.Valid() {
+			t.Errorf("seat status %q should be valid", s)
+		}
+	}
+	invalid := []SeatStatus{"", "reserved", "BOOKED", "booked "}
+	for _, s := range invalid {
+		if s.Valid() {
+			t.Errorf("seat status %q should be invalid", s)
+		}
+	}
+}
+
 func TestDomainErrorsAreDistinctAndStable(t *testing.T) {
-	errs := []error{ErrSeatAlreadyHeld, ErrHoldLimitExceeded, ErrHoldNotFound, ErrNotHoldOwner}
+	errs := []error{
+		ErrSeatAlreadyHeld, ErrHoldLimitExceeded, ErrHoldNotFound, ErrNotHoldOwner,
+		ErrSeatAlreadyBooked, ErrHoldExpired, ErrSessionAlreadyConfirmed,
+		ErrBookingNotFound, ErrSeatOutOfRange,
+	}
 	for i, a := range errs {
 		for j, b := range errs {
 			if i != j && errors.Is(a, b) {

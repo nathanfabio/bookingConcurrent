@@ -54,7 +54,8 @@ func (s Screening) HasSeat(seat booking.Seat) bool {
 }
 
 // AllSeats enumerates every seat in row-major order. The seat-map endpoint
-// (M4) walks this to render the full grid with per-seat status.
+// (GET /screenings/{id}/seats) walks this to render the full grid with
+// per-seat status.
 func (s Screening) AllSeats() []booking.Seat {
 	seats := make([]booking.Seat, 0, len(s.Rows)*s.SeatsPerRow)
 	for _, row := range s.Rows {

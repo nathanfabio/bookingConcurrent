@@ -43,4 +43,14 @@ type HoldStore interface {
 	// Errors: domain.ErrHoldNotFound for unknown or expired sessions.
 	// Ownership checks are the caller's job (compare Hold.UserID).
 	Get(ctx context.Context, sessionID string) (*domain.Hold, error)
+
+	// HeldSeats returns every seat currently held for screeningID. It backs
+	// the seat map's "held" layer (ADR 0006).
+	//
+	// SNAPSHOT SEMANTICS: seats acquired or released while the enumeration
+	// runs may or may not appear. That is fine by design — the seat map is
+	// advisory (a rendering of "right now"), and the atomicity that matters
+	// lives in Hold/Confirm, not here. Implementations must never fail the
+	// whole enumeration over a single corrupt entry: skip it and move on.
+	HeldSeats(ctx context.Context, screeningID string) ([]domain.Seat, error)
 }

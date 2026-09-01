@@ -84,7 +84,8 @@ func TestFakeExpiryViaClock(t *testing.T) {
 
 func TestFakeStaleBookkeepingCountsTowardLimitUntilSwept(t *testing.T) {
 	// Faithful to Redis: expiry is silent, so the user's ZSET-equivalent
-	// keeps the stale member until the sweeper reconciles it (M4). This
+	// keeps the stale member until the hold-expiry sweeper (the milestone
+	// that introduces cmd/worker) reconciles it. This
 	// test pins that behavior so nobody "fixes" the fake into diverging
 	// from the real store.
 	clock := NewManualClock(epoch)

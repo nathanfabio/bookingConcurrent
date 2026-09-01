@@ -24,6 +24,9 @@ failure.
 | `unauthorized` | authentication required, or credentials/tokens rejected |
 | `validation_error` | request body failed validation |
 | `conflict` | registration conflicts with an existing account |
+| `seat_taken` | a live HOLD owns the seat — may free up when the hold expires |
+| `seat_booked` | a CONFIRMED booking owns the seat — it will not free up on its own |
+| `hold_limit_exceeded` | the user already holds the maximum number of seats (`MAX_ACTIVE_HOLDS`) |
 
 ## Authentication model (ADR 0004, 0005, 0007)
 
@@ -129,6 +132,131 @@ Missing/invalid/expired token → `401 unauthorized`.
 curl -i localhost:8080/auth/me -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
+## Catalog & seat state (public reads)
+
+Browsing never needs auth. Seat state is scoped to a SCREENING — seat A1 at
+Tuesday's showing and seat A1 at Friday's are independent (ADR 0002 key
+scheme, ADR 0006).
+
+### `GET /movies`
+
+The catalog, ordered by title.
+
+Response `200`:
+
+```json
+{ "movies": [ { "id": "…", "title": "The Concurrency Menace", "synopsis": "…", "duration_minutes": 112, "created_at": "…" } ] }
+```
+
+### `GET /movies/{movieID}/screenings`
+
+One movie's showings, chronological. Unknown movie → `404 not_found`
+(distinct from a movie with no screenings, which is an empty list).
+
+Response `200`:
+
+```json
+{ "screenings": [ { "id": "…", "movie_id": "…", "starts_at": "…", "rows": ["A","B","C","D","E","F"], "seats_per_row": 10, "created_at": "…" } ] }
+```
+
+### `GET /screenings/{screeningID}/seats` — seat map
+
+The FULL seat grid, computed server-side (CLAUDE.md §4) with
+Postgres-first precedence (ADR 0006): a seat with a confirmed booking is
+`booked` even if a stale hold lingers in Redis. Each seat's status is one
+of `available`, `held`, `booked`.
+
+**Route note:** CLAUDE.md §4 names `GET /movies/{id}/seats`; the real
+scheduling model scopes seat state to screenings, so the map lives under
+the screening instead. Deliberate correction, recorded in ADR 0006.
+
+Response `200`:
+
+```json
+{
+  "screening_id": "…", "movie_id": "…", "starts_at": "…",
+  "rows": ["A","B"], "seats_per_row": 3,
+  "seats": [ { "row": "A", "number": 1, "status": "held" }, { "row": "A", "number": 2, "status": "available" } ]
+}
+```
+
+Unknown screening → `404 not_found`.
+
+```bash
+curl -i localhost:8080/screenings/$SCREENING_ID/seats
+```
+
+## Booking (protected)
+
+All three endpoints require `Authorization: Bearer <access>`. The user ID
+always comes from the verified token — never from a request body or path
+(CLAUDE.md §3). Confirm/release on a session that is unknown, expired, or
+someone else's answer the SAME `404 {"message":"hold not found","code":"not_found"}`,
+so session IDs cannot be probed (ADR 0006).
+
+### `POST /holds`
+
+Claim a seat for checkout.
+
+Request:
+
+```json
+{ "screening_id": "…", "row": "A", "number": 1 }
+```
+
+Validation runs before Redis is touched (CLAUDE.md §4): unknown screening →
+`404`; seat outside the grid → `400 validation_error`; already-confirmed
+seat → `409 seat_booked` (phantom-hold defense, ADR 0006).
+
+Response `201`:
+
+```json
+{ "session_id": "…", "screening_id": "…", "row": "A", "number": 1, "expires_at": "…" }
+```
+
+`session_id` is the handle for confirm/release. The hold token is
+deliberately NOT returned — it is the server-internal compare-and-delete
+secret (ADR 0002). Errors: `400 validation_error`, `404 not_found`,
+`409 seat_taken` (someone's hold got there first), `409 seat_booked`,
+`409 hold_limit_exceeded`.
+
+```bash
+curl -i -X POST localhost:8080/holds \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -d '{"screening_id":"'"$SCREENING_ID"'","row":"A","number":1}'
+```
+
+### `POST /holds/{sessionID}/confirm`
+
+Turn the caller's live hold into the durable booking. The commit point is
+one Postgres transaction — booking row + `BookingConfirmed` outbox row
+(ADR 0003/0006); the Redis hold is released best-effort afterwards.
+
+Response `201` (first confirm) or `200` (idempotent replay — the same
+booking returned again):
+
+```json
+{ "id": "…", "session_id": "…", "screening_id": "…", "row": "A", "number": 1, "status": "confirmed", "confirmed_at": "…" }
+```
+
+Errors: `404 not_found` (unknown/foreign/expired session),
+`409 seat_booked` (the seat lost a race to another session's booking).
+
+```bash
+curl -i -X POST localhost:8080/holds/$SESSION_ID/confirm \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+### `DELETE /holds/{sessionID}`
+
+Give up the hold without confirming. `204`, no body. Errors:
+`404 not_found` (unknown/foreign/expired session).
+
+```bash
+curl -i -X DELETE localhost:8080/holds/$SESSION_ID \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
 ## Development seed credentials
 
 `make run` seeds a development user (documented non-secret, dev only):
@@ -136,8 +264,16 @@ curl -i localhost:8080/auth/me -H "Authorization: Bearer $ACCESS_TOKEN"
 - email: `dev@example.com`
 - password: `booking-dev-password`
 
+It also seeds two movies with screenings (geometry A–F × 10) so the catalog
+and seat-map endpoints have data to browse.
+
 ## Not yet implemented
 
-- Rate limiting on `/auth/login` (brute-force protection, CLAUDE.md §5) —
-  arrives with the middleware hardening milestone.
-- Booking endpoints (hold/confirm/release/seat-map) — M4.
+- Rate limiting on `/auth/login` and `POST /holds` (brute-force / abuse
+  protection, CLAUDE.md §5) — arrives with the middleware hardening
+  milestone.
+- Payments (hold → payment intent → capture → confirm, CLAUDE.md §7) —
+  M5 plugs into the confirm path this milestone built.
+- Hold-expiry sweeper (`cmd/worker`) — deferred; correctness does not
+  depend on it (ADR 0006).
+- Outbox relay / `BookingConfirmed` consumer — M6.

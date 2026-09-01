@@ -216,11 +216,69 @@ func TestHoldExpiresAndSeatBecomesAvailableAgain(t *testing.T) {
 		t.Fatalf("re-Hold after expiry must succeed: %v", err)
 	}
 
-	// Known residue, reconciled by the M4 sweeper: the expired session's
-	// ZSET bookkeeping outlives its keys (Redis expiry is silent). Pin the
-	// current honest behavior so a future change is deliberate.
+	// Known residue, reconciled by the hold-expiry sweeper milestone (the
+	// one that introduces cmd/worker): the expired session's ZSET
+	// bookkeeping outlives its keys (Redis expiry is silent). Until then it
+	// is harmless — availability stays correct because seat keys expire on
+	// their own (ADR 0006). Pin the current honest behavior so a future
+	// change is deliberate.
 	if n := client.ZCard(ctx, "user:alice:holds").Val(); n != 1 {
 		t.Errorf("stale bookkeeping for alice = %d, want 1 until the sweeper runs", n)
+	}
+}
+
+// TestHeldSeatsScansOnlyTheRequestedScreening proves the seat-map's held
+// layer against real Redis: SCAN returns exactly the live seat keys of the
+// requested screening, nothing from other screenings, and one corrupt key
+// cannot sink the enumeration.
+func TestHeldSeatsScansOnlyTheRequestedScreening(t *testing.T) {
+	client := connectRedis(t)
+	store := newStore(client, 10)
+	ctx := context.Background()
+
+	// Two holdings in screening-10, one in screening-11.
+	for _, h := range []domain.Hold{
+		newHold("screening-10", "A", 1, "alice", testHoldTTL),
+		newHold("screening-10", "C", 3, "bob", testHoldTTL),
+		newHold("screening-11", "A", 1, "carol", testHoldTTL),
+	} {
+		if err := store.Hold(ctx, h); err != nil {
+			t.Fatalf("Hold %s: %v", h.SessionID, err)
+		}
+	}
+	// A corrupt seat key in screening-10's keyspace: valid prefix, garbage
+	// tail. The enumeration must skip it, not fail.
+	if err := client.Set(ctx, "seat:screening-10:corrupt", "junk", testHoldTTL).Err(); err != nil {
+		t.Fatalf("seed corrupt key: %v", err)
+	}
+
+	got, err := store.HeldSeats(ctx, "screening-10")
+	if err != nil {
+		t.Fatalf("HeldSeats: %v", err)
+	}
+	want := map[domain.Seat]bool{
+		{Row: "A", Number: 1}: false,
+		{Row: "C", Number: 3}: false,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("HeldSeats returned %d seats (%v), want %d", len(got), got, len(want))
+	}
+	for _, seat := range got {
+		if _, ok := want[seat]; !ok {
+			t.Errorf("unexpected seat %+v", seat)
+		}
+		want[seat] = true
+	}
+	for seat, seen := range want {
+		if !seen {
+			t.Errorf("missing seat %+v", seat)
+		}
+	}
+
+	// A screening with no holds yields an empty slice, not an error.
+	empty, err := store.HeldSeats(ctx, "screening-nothing")
+	if err != nil || len(empty) != 0 {
+		t.Errorf("empty screening: seats=%v err=%v, want none", empty, err)
 	}
 }
 

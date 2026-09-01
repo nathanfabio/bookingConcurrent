@@ -55,8 +55,8 @@ round trip with genuine conditional logic.
 **Hold tokens.** Every hold mints a UUID stored as the seat key's *value*
 and in the session hash. Teardown paths compare it before deleting.
 Without the token, the sequence "A's hold expires → B acquires the seat →
-A's client releases late" deletes B's seat key. The sweeper (M4) follows
-the same rule.
+A's client releases late" deletes B's seat key. The hold-expiry sweeper
+(the milestone that introduces `cmd/worker`) follows the same rule.
 
 **Sessions are stored as Redis hashes**, not JSON blobs, so Lua can read
 individual fields with `HGET` (Redis has no JSON parsing in scripts) and
@@ -65,11 +65,14 @@ so redis-commander renders them field-by-field during development.
 **Bookkeeping outlives keys, by design.** Redis expiry is silent: when a
 hold's TTL lapses, the seat/session keys vanish but the ZSET members
 remain until an explicit `ZREM`. The hold-limit count therefore includes
-stale entries until the expiry sweeper (M4) reconciles them. This is the
+stale entries until the hold-expiry sweeper (the milestone that introduces
+`cmd/worker`) reconciles them. This is the
 "reconcilable state" choice from ADR 0006's subject area: a ZSET's
 membership can be audited against reality (does the session still exist?)
 and repaired; a counter that drifts on missed decrements contains no
-information to reconstruct itself from.
+information to reconstruct itself from. Until the sweeper lands, the
+residue is harmless — seat availability is computed Postgres-first, and
+Redis's own TTL expiry cleans up the claim keys (ADR 0006).
 
 **Single-instance Redis, deliberately.** The scripts touch multiple keys,
 which Redis Cluster would require to share a hash tag
@@ -89,7 +92,9 @@ system. The constraint is documented here so nobody is surprised later.
 - Teardown safety no longer depends on timing luck; it depends on token
   comparison, which is testable (`TestLateReleaseCannotDestroyANewerHold`).
 - The sweeper becomes a required component (not an optimization): without
-  it, per-user ZSETs accumulate stale members. It lands in M4 with
-  token-checked cleanup.
+  it, per-user ZSETs accumulate stale members. It lands with the milestone
+  that introduces `cmd/worker`, doing token-checked cleanup. Correctness
+  does not wait on it — Redis's TTL frees the seats, and availability is
+  computed Postgres-first (ADR 0006).
 - Moving to Redis Cluster later means re-keying with hash tags — a
   contained change, but a real one.

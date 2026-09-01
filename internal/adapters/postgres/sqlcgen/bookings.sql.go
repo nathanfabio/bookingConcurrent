@@ -70,8 +70,9 @@ type InsertConfirmedBookingParams struct {
 	UserID      string
 }
 
-// Booking queries. M2 introduces the minimum needed to prove the schema
-// constraints; the confirm flow's full conflict handling lands in M4.
+// Booking queries. M2 introduced the minimum needed to prove the schema
+// constraints; M4 adds the confirm flow's full conflict handling plus the
+// seat-map reads.
 // Plain insert: the partial unique index on (screening, seat) WHERE
 // status='confirmed' is the arbiter — a second confirmed booking for the
 // same seat fails with a uniqueness violation (ADR 0006).
@@ -96,6 +97,42 @@ func (q *Queries) InsertConfirmedBooking(ctx context.Context, arg InsertConfirme
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listConfirmedSeatsByScreening = `-- name: ListConfirmedSeatsByScreening :many
+SELECT seat_row, seat_number
+FROM confirmed_bookings
+WHERE screening_id = $1
+  AND status = 'confirmed'
+ORDER BY seat_row, seat_number
+`
+
+type ListConfirmedSeatsByScreeningRow struct {
+	SeatRow    string
+	SeatNumber int32
+}
+
+// The seat map's authoritative "booked" layer (ADR 0006: availability is
+// computed Postgres-first). Served by the confirmed_bookings_screening_idx
+// plus the partial seat index, so it stays an index scan as the table grows.
+func (q *Queries) ListConfirmedSeatsByScreening(ctx context.Context, screeningID string) ([]ListConfirmedSeatsByScreeningRow, error) {
+	rows, err := q.db.Query(ctx, listConfirmedSeatsByScreening, screeningID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListConfirmedSeatsByScreeningRow
+	for rows.Next() {
+		var i ListConfirmedSeatsByScreeningRow
+		if err := rows.Scan(&i.SeatRow, &i.SeatNumber); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setBookingStatus = `-- name: SetBookingStatus :one

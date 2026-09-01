@@ -20,6 +20,14 @@ const (
 	CodeUnauthorized = "unauthorized"     // M3: auth required / credentials rejected
 	CodeValidation   = "validation_error" // M3: request body failed validation
 	CodeConflict     = "conflict"         // M3: duplicate email on register
+
+	// M4 booking codes. They are specific (not the generic CodeConflict)
+	// because clients branch on them: seat_taken may free up when a hold
+	// expires, seat_booked never does, and hold_limit_exceeded tells the
+	// buyer to finish or release something first.
+	CodeSeatTaken         = "seat_taken"          // a live hold owns the seat
+	CodeSeatBooked        = "seat_booked"         // a confirmed booking owns the seat
+	CodeHoldLimitExceeded = "hold_limit_exceeded" // per-user active hold cap
 )
 
 // errorResponse is the single JSON shape every error path writes

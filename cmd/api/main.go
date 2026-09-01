@@ -19,6 +19,8 @@ import (
 	postgresadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/postgres"
 	redisadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/redis"
 	appauth "github.com/nathanfabio/bookingConcurrent/internal/application/auth"
+	appbooking "github.com/nathanfabio/bookingConcurrent/internal/application/booking"
+	appcatalog "github.com/nathanfabio/bookingConcurrent/internal/application/catalog"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/config"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/logger"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/middleware"
@@ -100,6 +102,24 @@ func run() error {
 	redisClient := redisadapter.NewClient(cfg.Redis)
 	defer func() { _ = redisClient.Close() }()
 
+	// --- booking + catalog (M4) ---------------------------------------------------
+	// Holds live in Redis (Lua-atomic, TTL-bound, ADR 0002); confirmed
+	// bookings live in Postgres, where the partial unique index is the
+	// arbiter (ADR 0006). The service glues the two under the consistency
+	// model ADR 0006 spells out: Postgres commits first, Redis cleanup is
+	// best-effort after.
+	holdStore := redisadapter.NewHoldStore(redisClient, cfg.Redis.HoldTTL, cfg.Booking.MaxActiveHolds)
+	bookingService := appbooking.NewService(
+		holdStore,
+		postgresadapter.NewBookingRepo(pool),
+		postgresadapter.NewScreeningRepo(pool),
+		cfg.Redis.HoldTTL, time.Now,
+	)
+	catalogService := appcatalog.NewService(
+		postgresadapter.NewMovieRepo(pool),
+		postgresadapter.NewScreeningRepo(pool),
+	)
+
 	// --- routes ------------------------------------------------------------------
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", httpadapter.HealthzHandler())
@@ -119,7 +139,7 @@ func run() error {
 	// recover credentials. /auth/me is the one PROTECTED route — it wraps
 	// the handler in the auth middleware so the user ID comes from the
 	// verified token, never the request body (CLAUDE.md §3). Auth is
-	// applied per route; booking routes gain the same wrapper in M4.
+	// applied per route; the booking routes below use the same wrapper.
 	validate := func(ctx context.Context, token string) (string, error) {
 		return issuer.ValidateAccessToken(token)
 	}
@@ -130,6 +150,24 @@ func run() error {
 	mux.Handle("POST /auth/refresh", httpadapter.RefreshHandler(authService, cfg.Auth.RefreshTokenTTL, secureCookies))
 	mux.Handle("POST /auth/logout", httpadapter.LogoutHandler(authService, secureCookies))
 	mux.Handle("GET /auth/me", authMiddleware(httpadapter.MeHandler(authService)))
+
+	// --- catalog + booking routes (M4) -------------------------------------------
+	// PUBLIC reads: browsing the catalog and the seat map never needs auth —
+	// availability is browse-before-login data. The seat map is
+	// screening-scoped because seat state only exists per screening
+	// (ADR 0006 records the deliberate deviation from CLAUDE.md §4's
+	// /movies/{id}/seats wording).
+	mux.Handle("GET /movies", httpadapter.ListMoviesHandler(catalogService))
+	mux.Handle("GET /movies/{movieID}/screenings", httpadapter.ListScreeningsHandler(catalogService))
+	mux.Handle("GET /screenings/{screeningID}/seats", httpadapter.SeatMapHandler(bookingService))
+
+	// PROTECTED writes: the user ID comes from the verified token via the
+	// auth middleware — NEVER from a request body or path (CLAUDE.md §3).
+	// Confirm/release on someone else's session answer the same 404 as an
+	// unknown one, so session IDs cannot be probed.
+	mux.Handle("POST /holds", authMiddleware(httpadapter.HoldHandler(bookingService)))
+	mux.Handle("POST /holds/{sessionID}/confirm", authMiddleware(httpadapter.ConfirmHandler(bookingService)))
+	mux.Handle("DELETE /holds/{sessionID}", authMiddleware(httpadapter.ReleaseHandler(bookingService)))
 
 	// Middleware chain, applied innermost-first so the OUTER order matches
 	// CLAUDE.md §5: recovery → request ID → logging → handler.

@@ -20,7 +20,9 @@ var _ appbooking.HoldStore = (*HoldStore)(nil)
 //     and the seat becomes claimable again, but bookkeeping entries
 //     (the user/global ZSET equivalents) linger until an explicit removal,
 //     exactly like Redis ZSETs do after their member keys expire. The
-//     expiry sweeper (M4) is what reconciles them in both stores.
+//     hold-expiry sweeper milestone (the one that introduces cmd/worker)
+//     is what reconciles them in both stores; until then, Redis's own TTL
+//     expiry keeps availability correct (ADR 0006).
 //   - Hold limits therefore count lingering entries too — same as the
 //     in-script ZCARD check against real Redis.
 //
@@ -128,4 +130,22 @@ func (s *HoldStore) Get(ctx context.Context, sessionID string) (*domain.Hold, er
 	}
 	h := entry.hold
 	return &h, nil
+}
+
+// HeldSeats implements booking.HoldStore. It enumerates live sessions for
+// the screening — the fake's equivalent of SCANing seat:{screeningID}:*
+// keys in Redis (the seat and session entries always share a lifetime, so
+// both views agree). Snapshot semantics, same as the port contract.
+func (s *HoldStore) HeldSeats(ctx context.Context, screeningID string) ([]domain.Seat, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.clock.Now()
+
+	seats := make([]domain.Seat, 0)
+	for _, entry := range s.sessions {
+		if entry.hold.ScreeningID == screeningID && now.Before(entry.hold.ExpiresAt) {
+			seats = append(seats, entry.hold.Seat)
+		}
+	}
+	return seats, nil
 }

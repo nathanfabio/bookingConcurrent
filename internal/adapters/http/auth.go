@@ -173,8 +173,9 @@ func MeHandler(svc *appauth.Service) http.HandlerFunc {
 }
 
 // writeAuthError is the central sentinel→status mapping for auth
-// (CLAUDE.md §5). M4 extends the same switch with booking sentinels.
-// Infra errors log server-side and surface a generic 500 — never details.
+// (CLAUDE.md §5). Booking and catalog sentinels have their own switch in
+// writeBookingError (booking.go). Infra errors log server-side and surface
+// a generic 500 — never details.
 func writeAuthError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, user.ErrValidation):

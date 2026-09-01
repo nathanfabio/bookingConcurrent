@@ -1,5 +1,6 @@
--- Booking queries. M2 introduces the minimum needed to prove the schema
--- constraints; the confirm flow's full conflict handling lands in M4.
+-- Booking queries. M2 introduced the minimum needed to prove the schema
+-- constraints; M4 adds the confirm flow's full conflict handling plus the
+-- seat-map reads.
 
 -- name: InsertConfirmedBooking :one
 -- Plain insert: the partial unique index on (screening, seat) WHERE
@@ -28,3 +29,13 @@ SELECT EXISTS (
       AND seat_number = $3
       AND status = 'confirmed'
 );
+
+-- name: ListConfirmedSeatsByScreening :many
+-- The seat map's authoritative "booked" layer (ADR 0006: availability is
+-- computed Postgres-first). Served by the confirmed_bookings_screening_idx
+-- plus the partial seat index, so it stays an index scan as the table grows.
+SELECT seat_row, seat_number
+FROM confirmed_bookings
+WHERE screening_id = $1
+  AND status = 'confirmed'
+ORDER BY seat_row, seat_number;

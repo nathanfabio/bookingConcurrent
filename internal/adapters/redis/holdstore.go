@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	appbooking "github.com/nathanfabio/bookingConcurrent/internal/application/booking"
@@ -29,12 +31,39 @@ var _ appbooking.HoldStore = (*HoldStore)(nil)
 // operation on an old hold from destroying a newer hold of the same seat.
 const (
 	globalHoldsKey  = "holds:expiring"
+	seatPrefix      = "seat:"
 	sessionPrefix   = "session:"
 	userHoldsPrefix = "user:"
 )
 
 func seatKey(screeningID string, seat domain.Seat) string {
-	return "seat:" + screeningID + ":" + seat.Row + ":" + strconv.Itoa(seat.Number)
+	return seatPrefix + screeningID + ":" + seat.Row + ":" + strconv.Itoa(seat.Number)
+}
+
+// parseSeatKey is the inverse of seatKey for one screening. It returns the
+// seat named by a seat:{screeningID}:{row}:{num} key that is already known
+// to belong to screeningID, and false if the key is not a valid seat key.
+// Keeping the parse strict (and the caller skip-and-log on false) means one
+// corrupt key can never fail a whole seat-map render.
+func parseSeatKey(screeningID, key string) (domain.Seat, bool) {
+	prefix := seatPrefix + screeningID + ":"
+	if !strings.HasPrefix(key, prefix) {
+		return domain.Seat{}, false
+	}
+	rest := strings.TrimPrefix(key, prefix)
+	row, numStr, found := strings.Cut(rest, ":")
+	if !found {
+		return domain.Seat{}, false
+	}
+	num, err := strconv.Atoi(numStr)
+	if err != nil {
+		return domain.Seat{}, false
+	}
+	seat, err := domain.NewSeat(row, num)
+	if err != nil {
+		return domain.Seat{}, false
+	}
+	return seat, true
 }
 
 func sessionKey(sessionID string) string { return sessionPrefix + sessionID }
@@ -246,4 +275,38 @@ func (s *HoldStore) Get(ctx context.Context, sessionID string) (*domain.Hold, er
 		HoldToken:   fields["hold_token"],
 		ExpiresAt:   time.Unix(expiresUnix, 0),
 	}, nil
+}
+
+// HeldSeats enumerates the seats currently held for a screening — the seat
+// map's "held" layer (ADR 0006).
+//
+// It SCANs seat:{screeningID}:* rather than walking the holds:expiring
+// ZSET: the ZSETs deliberately retain stale members after silent TTL expiry
+// (that bookkeeping outlives the keys by design, ADR 0002), so they would
+// over-report. A seat key, by contrast, exists if and only if its hold is
+// live — Redis only returns it while the TTL has not run out — so no
+// separate liveness re-check is needed. SCAN is a cursor walk, not an atomic
+// snapshot: the port contract documents the advisory semantics, and a
+// concurrent hold/release may or may not appear in the result.
+//
+// Screening IDs are fixed-width UUIDs, so the seat:{screeningID}: prefix
+// cannot accidentally match another screening's keys.
+func (s *HoldStore) HeldSeats(ctx context.Context, screeningID string) ([]domain.Seat, error) {
+	seats := make([]domain.Seat, 0)
+	iter := s.client.Scan(ctx, 0, seatPrefix+screeningID+":*", 0).Iterator()
+	for iter.Next(ctx) {
+		seat, ok := parseSeatKey(screeningID, iter.Val())
+		if !ok {
+			// One corrupt key must not sink the whole map. Skip it and keep
+			// rendering; the detail is operator material, not client material.
+			slog.WarnContext(ctx, "skipping unparseable hold seat key",
+				slog.String("key", iter.Val()))
+			continue
+		}
+		seats = append(seats, seat)
+	}
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("booking: scan held seats: %w", err)
+	}
+	return seats, nil
 }
