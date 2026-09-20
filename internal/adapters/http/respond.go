@@ -28,6 +28,18 @@ const (
 	CodeSeatTaken         = "seat_taken"          // a live hold owns the seat
 	CodeSeatBooked        = "seat_booked"         // a confirmed booking owns the seat
 	CodeHoldLimitExceeded = "hold_limit_exceeded" // per-user active hold cap
+
+	// M5 payment codes (ADR 0008). payment_required answers 402 — the
+	// status RFC 9110 reserves for exactly this and Stripe et al. use in
+	// practice; clients branch on the CODE regardless (409 was the
+	// alternative, recorded in the ADR). payment_declined is distinct from
+	// payment_required because the recovery differs: required means "start
+	// checkout", declined means "the gateway refused — retry with a new
+	// intent". webhook_invalid is deliberately opaque: one code for every
+	// verification failure so a forger gets no oracle.
+	CodePaymentRequired = "payment_required" // no captured payment for the session
+	CodePaymentDeclined = "payment_declined" // gateway refused the capture
+	CodeWebhookInvalid  = "webhook_invalid"  // signature/timestamp/shape check failed
 )
 
 // errorResponse is the single JSON shape every error path writes

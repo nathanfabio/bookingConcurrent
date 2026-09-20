@@ -39,14 +39,20 @@ func SeedDev(ctx context.Context, pool *pgxpool.Pool, hashPassword func(string) 
 	catalog := []struct {
 		movie     domainmovie.Movie
 		screening []time.Duration // offsets from now for each screening
+		// priceCents is per-movie, deterministic, and deliberately not a
+		// round number: a wrong amount (e.g. reading seats instead of cents)
+		// is instantly visible in payment rows and curl demos.
+		priceCents int
 	}{
 		{
-			movie:     domainmovie.Movie{Title: "The Concurrency Menace", Synopsis: "A race condition threatens a small town's only cinema.", DurationMinutes: 112},
-			screening: []time.Duration{24 * time.Hour, 48 * time.Hour},
+			movie:      domainmovie.Movie{Title: "The Concurrency Menace", Synopsis: "A race condition threatens a small town's only cinema.", DurationMinutes: 112},
+			screening:  []time.Duration{24 * time.Hour, 48 * time.Hour},
+			priceCents: 1450,
 		},
 		{
-			movie:     domainmovie.Movie{Title: "Eventual Consistency", Synopsis: "Two replicas learn that love, like writes, takes time to propagate.", DurationMinutes: 96},
-			screening: []time.Duration{30 * time.Hour},
+			movie:      domainmovie.Movie{Title: "Eventual Consistency", Synopsis: "Two replicas learn that love, like writes, takes time to propagate.", DurationMinutes: 96},
+			screening:  []time.Duration{30 * time.Hour},
+			priceCents: 1250,
 		},
 	}
 
@@ -66,6 +72,7 @@ func SeedDev(ctx context.Context, pool *pgxpool.Pool, hashPassword func(string) 
 				StartsAt:    time.Now().Add(offset).Truncate(time.Minute),
 				Rows:        rows,
 				SeatsPerRow: seatsPerRow,
+				PriceCents:  item.priceCents,
 			})
 			if err != nil {
 				return fmt.Errorf("seed: create screening: %w", err)

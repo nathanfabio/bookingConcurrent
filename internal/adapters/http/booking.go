@@ -10,6 +10,7 @@ import (
 	appbooking "github.com/nathanfabio/bookingConcurrent/internal/application/booking"
 	booking "github.com/nathanfabio/bookingConcurrent/internal/domain/booking"
 	domainmovie "github.com/nathanfabio/bookingConcurrent/internal/domain/movie"
+	domainpayment "github.com/nathanfabio/bookingConcurrent/internal/domain/payment"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/middleware"
 )
 
@@ -213,6 +214,11 @@ func writeBookingError(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, booking.ErrNotHoldOwner),
 		errors.Is(err, booking.ErrHoldExpired):
 		WriteError(w, http.StatusNotFound, CodeNotFound, "hold not found")
+	case errors.Is(err, domainpayment.ErrPaymentNotCaptured):
+		// The M5 confirm gate (ADR 0008): the hold is live and owned, but
+		// the money has not moved. Same body as the payment routes' 402 so
+		// clients branch on one code wherever it appears.
+		WriteError(w, http.StatusPaymentRequired, CodePaymentRequired, "no captured payment for this session")
 	case errors.Is(err, domainmovie.ErrScreeningNotFound):
 		WriteError(w, http.StatusNotFound, CodeNotFound, "screening not found")
 	case errors.Is(err, domainmovie.ErrMovieNotFound):

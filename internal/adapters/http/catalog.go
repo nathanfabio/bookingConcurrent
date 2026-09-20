@@ -24,7 +24,11 @@ type (
 		StartsAt    time.Time `json:"starts_at"`
 		Rows        []string  `json:"rows"`
 		SeatsPerRow int       `json:"seats_per_row"`
-		CreatedAt   time.Time `json:"created_at"`
+		// PriceCents is what a payment intent for this screening will freeze
+		// (M5, ADR 0008): clients see the price BEFORE holding, and the
+		// amount on the intent response must match this exactly.
+		PriceCents int       `json:"price_cents"`
+		CreatedAt  time.Time `json:"created_at"`
 	}
 
 	movieListResponse struct {
@@ -53,6 +57,7 @@ func screeningDTO(s domainmovie.Screening) screeningResponse {
 		StartsAt:    s.StartsAt,
 		Rows:        s.Rows,
 		SeatsPerRow: s.SeatsPerRow,
+		PriceCents:  s.PriceCents,
 		CreatedAt:   s.CreatedAt,
 	}
 }

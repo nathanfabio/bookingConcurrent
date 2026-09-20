@@ -92,6 +92,7 @@ func (r *ScreeningRepo) Create(ctx context.Context, s domainmovie.Screening) (do
 		StartsAt:    pgtype.Timestamptz{Time: s.StartsAt, Valid: true},
 		Rows:        s.Rows,
 		SeatsPerRow: int32(s.SeatsPerRow),
+		PriceCents:  int32(s.PriceCents),
 	})
 	if err != nil {
 		return domainmovie.Screening{}, fmt.Errorf("screening: create: %w", err)
@@ -131,6 +132,7 @@ func screeningFromRow(row sqlcgen.Screening) domainmovie.Screening {
 		StartsAt:    ts(row.StartsAt),
 		Rows:        row.Rows,
 		SeatsPerRow: int(row.SeatsPerRow),
+		PriceCents:  int(row.PriceCents),
 		CreatedAt:   ts(row.CreatedAt),
 	}
 }

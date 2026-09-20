@@ -132,6 +132,7 @@ type Broker struct {
 // Payment holds payment gateway selection and credentials (CLAUDE.md §7).
 type Payment struct {
 	Provider            PaymentProvider
+	FakeWebhookSecret   string
 	StripeSecretKey     string
 	StripeWebhookSecret string
 }
@@ -238,7 +239,22 @@ func Load() (*Config, error) {
 	default:
 		fail("PAYMENT_PROVIDER: %q is not one of fake, stripe", cfg.Payment.Provider)
 	}
+	if cfg.Payment.Provider == PaymentProviderFake {
+		// The sandbox signs and verifies webhook payloads with an HMAC
+		// secret (ADR 0008). It is a REAL secret in the only sense that
+		// matters for the lesson: whoever holds it can forge captures, so
+		// it is env-driven like every other credential (§10) and never
+		// hardcoded or defaulted. Dev boxes generate one; CI pins its own.
+		cfg.Payment.FakeWebhookSecret = os.Getenv("PAYMENT_FAKE_WEBHOOK_SECRET")
+		if cfg.Payment.FakeWebhookSecret == "" {
+			fail("PAYMENT_FAKE_WEBHOOK_SECRET is required when PAYMENT_PROVIDER=fake (generate: openssl rand -hex 32)")
+		}
+	}
 	if cfg.Payment.Provider == PaymentProviderStripe {
+		// Keys are validated here; the "stripe adapter not implemented yet"
+		// failure belongs to the composition root, which owns adapter
+		// selection (ADR 0008). A keyless stripe config still fails HERE
+		// first — config checks shape, wiring checks capability.
 		cfg.Payment.StripeSecretKey = os.Getenv("PAYMENT_STRIPE_SECRET_KEY")
 		if cfg.Payment.StripeSecretKey == "" {
 			fail("PAYMENT_STRIPE_SECRET_KEY is required when PAYMENT_PROVIDER=stripe")

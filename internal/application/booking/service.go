@@ -11,6 +11,7 @@ import (
 
 	domain "github.com/nathanfabio/bookingConcurrent/internal/domain/booking"
 	domainmovie "github.com/nathanfabio/bookingConcurrent/internal/domain/movie"
+	domainpayment "github.com/nathanfabio/bookingConcurrent/internal/domain/payment"
 )
 
 // ConfirmResult carries what the HTTP layer needs to answer a confirm: the
@@ -38,8 +39,8 @@ type SeatMapView struct {
 }
 
 // Service orchestrates the booking use cases. It depends only on ports —
-// HoldStore, BookingStore, ScreeningStore — so unit tests run against the
-// in-memory fakes and production runs against Redis + Postgres.
+// HoldStore, BookingStore, ScreeningStore, PaymentFinder — so unit tests run
+// against the in-memory fakes and production runs against Redis + Postgres.
 //
 // now is injected (not time.Now directly) so expiry-dependent behavior is
 // testable deterministically, mirroring the memory.Clock idea without
@@ -48,17 +49,19 @@ type Service struct {
 	holds      HoldStore
 	bookings   BookingStore
 	screenings ScreeningStore
+	payments   PaymentFinder
 	holdTTL    time.Duration
 	now        func() time.Time
 }
 
 // NewService wires the booking use cases. holdTTL comes from validated
 // config; production passes time.Now for the clock.
-func NewService(holds HoldStore, bookings BookingStore, screenings ScreeningStore, holdTTL time.Duration, now func() time.Time) *Service {
+func NewService(holds HoldStore, bookings BookingStore, screenings ScreeningStore, payments PaymentFinder, holdTTL time.Duration, now func() time.Time) *Service {
 	return &Service{
 		holds:      holds,
 		bookings:   bookings,
 		screenings: screenings,
+		payments:   payments,
 		holdTTL:    holdTTL,
 		now:        now,
 	}
@@ -128,9 +131,27 @@ func (s *Service) Confirm(ctx context.Context, userID, sessionID string) (Confir
 	}
 	if !hold.CanBeConfirmed(s.now()) {
 		// The sub-second window where the store still serves the hold but
-		// the business rule says no. A hard NO even with payment authorized
-		// (ADR 0006); M5 re-anchors this to payment capture.
+		// the business rule says no. A hard NO even with payment captured
+		// (ADR 0006, kept by ADR 0008): the expiry check runs BEFORE the
+		// payment gate, so money that moved on an expired hold is
+		// bookkeeping truth, not a license to sell the seat.
 		return ConfirmResult{}, domain.ErrHoldExpired
+	}
+
+	// The payment gate — this is what ADR 0006's "M5 re-anchors this to
+	// payment capture" meant (ADR 0008): no captured money, no booking.
+	// The read is deliberately OUTSIDE the booking transaction: capture is
+	// monotonic in M5 (nothing un-captures), so the worst race is answering
+	// ErrPaymentNotCaptured a microsecond before the capture lands, and the
+	// client's retry succeeds. Folding the gate into the transaction would
+	// buy nothing here and would have to be re-evaluated the day refunds
+	// (an un-capture) exist.
+	captured, err := s.payments.HasCapturedPayment(ctx, sessionID)
+	if err != nil {
+		return ConfirmResult{}, fmt.Errorf("booking: confirm: payment gate: %w", err)
+	}
+	if !captured {
+		return ConfirmResult{}, domainpayment.ErrPaymentNotCaptured
 	}
 
 	b := domain.Booking{

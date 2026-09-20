@@ -35,7 +35,14 @@ type Screening struct {
 	StartsAt    time.Time
 	Rows        []string // explicit row labels, e.g. {A, B, C}
 	SeatsPerRow int
-	CreatedAt   time.Time
+	// PriceCents is the ticket price for this screening, in cents. It is the
+	// pricing source of truth: a payment intent FREEZES it into the payment
+	// row at creation (migration 00005 stores amount_cents per payment), so
+	// later price changes never rewrite what a buyer was charged. Positive
+	// by schema CHECK (migration 00008) — a zero-amount intent is a gateway
+	// edge case with no business meaning here.
+	PriceCents int
+	CreatedAt  time.Time
 }
 
 // HasSeat reports whether the screening's geometry contains seat. This is

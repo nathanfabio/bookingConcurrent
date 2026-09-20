@@ -34,6 +34,7 @@ func setValidEnv(t *testing.T) {
 		"AUTH_REFRESH_TOKEN_TTL":        "720h",
 		"RABBITMQ_URL":                  "amqp://booking:pw@localhost:5672/booking",
 		"PAYMENT_PROVIDER":              "fake",
+		"PAYMENT_FAKE_WEBHOOK_SECRET":   strings.Repeat("w", 32),
 		"PAYMENT_STRIPE_SECRET_KEY":     "",
 		"PAYMENT_STRIPE_WEBHOOK_SECRET": "",
 		"OTEL_ENABLED":                  "false",
@@ -68,6 +69,9 @@ func TestLoadValid(t *testing.T) {
 	}
 	if cfg.Payment.Provider != PaymentProviderFake {
 		t.Errorf("Payment.Provider = %q, want fake", cfg.Payment.Provider)
+	}
+	if cfg.Payment.FakeWebhookSecret == "" {
+		t.Error("Payment.FakeWebhookSecret not loaded from env")
 	}
 	if cfg.Telemetry.Enabled {
 		t.Errorf("Telemetry.Enabled = true, want false")
@@ -196,6 +200,22 @@ func TestLoadStripeRequiresKeys(t *testing.T) {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error should name %s, got: %v", key, err)
 		}
+	}
+}
+
+func TestLoadFakeRequiresWebhookSecret(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("PAYMENT_FAKE_WEBHOOK_SECRET", "")
+
+	// The fake gateway signs/verifies webhook HMACs with this secret; an
+	// unset secret must fail at boot, not silently disable verification
+	// (fail-fast, CLAUDE.md §10).
+	_, err := Load()
+	if err == nil {
+		t.Fatal("fake provider without a webhook secret must fail validation")
+	}
+	if !strings.Contains(err.Error(), "PAYMENT_FAKE_WEBHOOK_SECRET") {
+		t.Errorf("error should name PAYMENT_FAKE_WEBHOOK_SECRET, got: %v", err)
 	}
 }
 

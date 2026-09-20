@@ -77,6 +77,7 @@ type Screening struct {
 	Rows        []string
 	SeatsPerRow int32
 	CreatedAt   pgtype.Timestamptz
+	PriceCents  int32
 }
 
 type User struct {

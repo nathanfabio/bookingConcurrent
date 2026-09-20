@@ -52,7 +52,7 @@ interfaces, return structs"). A consequence, deliberately embraced: an
 interface exists only once a real need exists — typically one production
 implementation plus an in-memory fake for tests. We do not pre-declare
 interfaces for symmetry; CLAUDE.md explicitly warns against speculative
-ports, and M7's `PaymentGateway` (justified by its two real implementations:
+ports, and M5's `PaymentGateway` (justified by its two real implementations:
 fake sandbox and Stripe) is the test case for that rule.
 
 **Stdlib-first.** `net/http` with Go 1.22+ pattern routing, `log/slog`,

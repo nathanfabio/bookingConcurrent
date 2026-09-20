@@ -7,6 +7,7 @@ package booking_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	appbooking "github.com/nathanfabio/bookingConcurrent/internal/application/booking"
 	domain "github.com/nathanfabio/bookingConcurrent/internal/domain/booking"
 	domainmovie "github.com/nathanfabio/bookingConcurrent/internal/domain/movie"
+	domainpayment "github.com/nathanfabio/bookingConcurrent/internal/domain/payment"
 )
 
 // epoch anchors every clock in these tests so expiry arithmetic is exact
@@ -34,6 +36,7 @@ type testEnv struct {
 	holds      *memory.HoldStore
 	bookings   *memory.BookingStore
 	screenings *memory.ScreeningStore
+	payments   *memory.PaymentStore
 	svc        *appbooking.Service
 }
 
@@ -45,12 +48,15 @@ func newTestEnv(t *testing.T, maxHolds int) *testEnv {
 		holds:      memory.NewHoldStore(clock, maxHolds),
 		bookings:   memory.NewBookingStore(clock),
 		screenings: memory.NewScreeningStore(),
+		payments:   memory.NewPaymentStore(clock),
 	}
-	env.svc = appbooking.NewService(env.holds, env.bookings, env.screenings, testHoldTTL, clock.Now)
+	env.svc = appbooking.NewService(env.holds, env.bookings, env.screenings, env.payments, testHoldTTL, clock.Now)
 	return env
 }
 
-// seedScreening registers a 3x4 screening (rows A-C, seats 1-4).
+// seedScreening registers a 3x4 screening (rows A-C, seats 1-4) priced at
+// 1200 cents (migration 00008 made price_cents NOT NULL — every fixture
+// states its price, no silent defaults).
 func (env *testEnv) seedScreening(id string) {
 	env.screenings.Add(domainmovie.Screening{
 		ID:          id,
@@ -58,7 +64,16 @@ func (env *testEnv) seedScreening(id string) {
 		StartsAt:    epoch.Add(24 * time.Hour),
 		Rows:        []string{"A", "B", "C"},
 		SeatsPerRow: 4,
+		PriceCents:  1200,
 	})
+}
+
+// seedCapturedPayment satisfies the confirm gate (ADR 0008) the way a
+// completed checkout would: the fake store gains a captured payment row for
+// the session. Tests that exercise confirm SUCCESS call this first; tests
+// that assert the gate itself deliberately do not.
+func (env *testEnv) seedCapturedPayment(sessionID string) {
+	env.payments.SeedCaptured(context.Background(), sessionID, "pi_fake_test-"+sessionID, 1200)
 }
 
 func seatA1() domain.Seat { return domain.Seat{Row: "A", Number: 1} }
@@ -257,6 +272,7 @@ func TestServiceConfirm(t *testing.T) {
 		env := newTestEnv(t, 4)
 		env.seedScreening(screeningID)
 		hold := env.holdA1(t, screeningID)
+		env.seedCapturedPayment(hold.SessionID)
 
 		res, err := env.svc.Confirm(ctx, alice, hold.SessionID)
 		if err != nil {
@@ -293,6 +309,7 @@ func TestServiceConfirm(t *testing.T) {
 		env := newTestEnv(t, 4)
 		env.seedScreening(screeningID)
 		hold := env.holdA1(t, screeningID)
+		env.seedCapturedPayment(hold.SessionID)
 
 		_, err := env.svc.Confirm(ctx, bob, hold.SessionID)
 		if !errors.Is(err, domain.ErrNotHoldOwner) {
@@ -331,7 +348,7 @@ func TestServiceConfirm(t *testing.T) {
 			SessionID: "late-session", ScreeningID: screeningID, Seat: seatA1(),
 			UserID: alice, HoldToken: "late-token", ExpiresAt: epoch.Add(testHoldTTL),
 		}
-		svc := appbooking.NewService(servedPastExpiryStore{hold: hold}, env.bookings, env.screenings, testHoldTTL, env.clock.Now)
+		svc := appbooking.NewService(servedPastExpiryStore{hold: hold}, env.bookings, env.screenings, env.payments, testHoldTTL, env.clock.Now)
 
 		env.clock.Advance(testHoldTTL) // exactly at the inclusive expiry
 		_, err := svc.Confirm(ctx, alice, hold.SessionID)
@@ -344,6 +361,7 @@ func TestServiceConfirm(t *testing.T) {
 		env := newTestEnv(t, 4)
 		env.seedScreening(screeningID)
 		hold := env.holdA1(t, screeningID)
+		env.seedCapturedPayment(hold.SessionID)
 
 		// Interleaving: between hold and confirm, a DIFFERENT session
 		// confirmed the same seat (as if the hold had expired and someone
@@ -367,12 +385,13 @@ func TestServiceConfirm(t *testing.T) {
 		env := newTestEnv(t, 4)
 		env.seedScreening(screeningID)
 		failing := &failingReleaseStore{inner: env.holds}
-		env.svc = appbooking.NewService(failing, env.bookings, env.screenings, testHoldTTL, env.clock.Now)
+		env.svc = appbooking.NewService(failing, env.bookings, env.screenings, env.payments, testHoldTTL, env.clock.Now)
 
 		hold, err := env.svc.Hold(ctx, alice, screeningID, seatA1())
 		if err != nil {
 			t.Fatalf("Hold: %v", err)
 		}
+		env.seedCapturedPayment(hold.SessionID)
 		failing.setFail(true) // Redis goes down right after the commit...
 		first, err := env.svc.Confirm(ctx, alice, hold.SessionID)
 		if err != nil || !first.Created {
@@ -399,6 +418,175 @@ func TestServiceConfirm(t *testing.T) {
 			t.Errorf("confirmed seats = %v (err %v), want exactly 1", seats, err)
 		}
 	})
+
+	t.Run("no captured payment is rejected at the gate", func(t *testing.T) {
+		env := newTestEnv(t, 4)
+		env.seedScreening(screeningID)
+		hold := env.holdA1(t, screeningID)
+
+		// The gate ADR 0008 anchored confirm to: a live, owned hold with no
+		// captured money must not produce a booking.
+		_, err := env.svc.Confirm(ctx, alice, hold.SessionID)
+		if !errors.Is(err, domainpayment.ErrPaymentNotCaptured) {
+			t.Errorf("err = %v, want ErrPaymentNotCaptured", err)
+		}
+		seats, seatsErr := env.bookings.ConfirmedSeats(ctx, screeningID)
+		if seatsErr != nil || len(seats) != 0 {
+			t.Errorf("confirmed seats = %v (err %v), want none", seats, seatsErr)
+		}
+
+		// An intent that never captured does not satisfy the gate either.
+		if _, insertErr := env.payments.InsertIntent(ctx, domainpayment.Payment{
+			BookingSessionID: hold.SessionID,
+			Gateway:          "fake",
+			IntentID:         "pi_fake_uncaptured",
+			AmountCents:      1200,
+			Currency:         domainpayment.DefaultCurrency,
+		}); insertErr != nil {
+			t.Fatalf("seed uncaptured intent: %v", insertErr)
+		}
+		if _, err := env.svc.Confirm(ctx, alice, hold.SessionID); !errors.Is(err, domainpayment.ErrPaymentNotCaptured) {
+			t.Errorf("err = %v, want ErrPaymentNotCaptured with an uncaptured intent", err)
+		}
+
+		// Capture flips the gate without any other change.
+		if _, _, captureErr := env.payments.Capture(ctx, "pi_fake_uncaptured"); captureErr != nil {
+			t.Fatalf("capture: %v", captureErr)
+		}
+		if _, err := env.svc.Confirm(ctx, alice, hold.SessionID); err != nil {
+			t.Errorf("confirm after capture: %v", err)
+		}
+	})
+
+	t.Run("expired hold beats captured payment", func(t *testing.T) {
+		env := newTestEnv(t, 4)
+		env.seedScreening(screeningID)
+		hold := env.holdA1(t, screeningID)
+		env.seedCapturedPayment(hold.SessionID)
+
+		// ADR 0006's hard NO, now pinned with money actually captured: the
+		// expiry check runs BEFORE the payment gate, so the answer is the
+		// hold sentinel, not a payment one — and no booking is written even
+		// though the funds moved. The payment row is the audit trail; the
+		// refund path is deferred ops work (ADR 0008).
+		env.clock.Advance(testHoldTTL)
+		_, err := env.svc.Confirm(ctx, alice, hold.SessionID)
+		if !errors.Is(err, domain.ErrHoldNotFound) {
+			t.Errorf("err = %v, want ErrHoldNotFound (fake stops serving at the boundary)", err)
+		}
+		seats, seatsErr := env.bookings.ConfirmedSeats(ctx, screeningID)
+		if seatsErr != nil || len(seats) != 0 {
+			t.Errorf("confirmed seats = %v (err %v), want none", seats, seatsErr)
+		}
+	})
+
+	t.Run("payment gate infra error fails the confirm closed", func(t *testing.T) {
+		env := newTestEnv(t, 4)
+		env.seedScreening(screeningID)
+		hold := env.holdA1(t, screeningID)
+		env.seedCapturedPayment(hold.SessionID)
+
+		// "Postgres went down mid-confirm": the gate read fails, so confirm
+		// must fail closed (no booking) with the error wrapped, not guess.
+		svc := appbooking.NewService(env.holds, env.bookings, env.screenings,
+			failingPaymentFinder{err: errors.New("connection refused")}, testHoldTTL, env.clock.Now)
+		_, err := svc.Confirm(ctx, alice, hold.SessionID)
+		if err == nil {
+			t.Fatal("confirm must fail when the payment gate cannot read")
+		}
+		if !strings.Contains(err.Error(), "payment gate") {
+			t.Errorf("err = %v, want a wrapped payment-gate failure", err)
+		}
+		seats, seatsErr := env.bookings.ConfirmedSeats(ctx, screeningID)
+		if seatsErr != nil || len(seats) != 0 {
+			t.Errorf("confirmed seats = %v (err %v), want none — the gate failure must not write", seats, seatsErr)
+		}
+	})
+}
+
+// failingPaymentFinder is a PaymentFinder whose read always fails — the
+// test stand-in for the payments table being unreachable mid-confirm.
+type failingPaymentFinder struct{ err error }
+
+var _ appbooking.PaymentFinder = failingPaymentFinder{}
+
+func (f failingPaymentFinder) HasCapturedPayment(ctx context.Context, sessionID string) (bool, error) {
+	return false, f.err
+}
+
+// TestServiceConcurrentCaptureConfirmExactlyOneBooking is the §9
+// concurrency proof for the payment/confirm path: many goroutines race
+// Confirm while the capture lands mid-race. Before the capture every racer
+// must be rejected at the gate; after it, exactly one may create the
+// booking and the rest are replays or hold-gone. Run with -race.
+func TestServiceConcurrentCaptureConfirmExactlyOneBooking(t *testing.T) {
+	const screeningID = "screening-1"
+	const contenders = 32
+
+	env := newTestEnv(t, 4)
+	env.seedScreening(screeningID)
+	hold := env.holdA1(t, screeningID)
+
+	type outcome struct {
+		res appbooking.ConfirmResult
+		err error
+	}
+	results := make([]outcome, contenders)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range contenders {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			res, err := env.svc.Confirm(context.Background(), alice, hold.SessionID)
+			results[i] = outcome{res: res, err: err}
+		}(i)
+	}
+	close(start)
+	// The capture lands while the racers are in flight — some see the gate
+	// closed, some see it open; which is which depends on interleaving, and
+	// that is the point.
+	env.seedCapturedPayment(hold.SessionID)
+	wg.Wait()
+
+	created, replayed, gone, gated := 0, 0, 0, 0
+	var bookingID string
+	for i, r := range results {
+		switch {
+		case r.err == nil && r.res.Created:
+			created++
+		case r.err == nil && !r.res.Created:
+			replayed++
+		case errors.Is(r.err, domain.ErrHoldNotFound):
+			gone++
+		case errors.Is(r.err, domainpayment.ErrPaymentNotCaptured):
+			gated++
+		default:
+			t.Errorf("goroutine %d unexpected outcome: created=%v err=%v", i, r.res.Created, r.err)
+			continue
+		}
+		if r.err == nil {
+			if bookingID == "" {
+				bookingID = r.res.Booking.ID
+			} else if r.res.Booking.ID != bookingID {
+				t.Errorf("goroutine %d got booking %s, want %s", i, r.res.Booking.ID, bookingID)
+			}
+		}
+	}
+	if created != 1 {
+		t.Errorf("created = %d, want exactly 1 (gated=%d replayed=%d gone=%d)", created, gated, replayed, gone)
+	}
+	if gated == 0 {
+		// Not strictly guaranteed by interleaving, but 32 racers against a
+		// mid-race capture should reliably produce some gate rejections; if
+		// this ever flakes, the assertion to keep is created == 1.
+		t.Log("note: no racer hit the closed gate — capture landed before all confirms")
+	}
+	seats, err := env.bookings.ConfirmedSeats(context.Background(), screeningID)
+	if err != nil || len(seats) != 1 {
+		t.Fatalf("confirmed seats = %v (err %v), want exactly 1", seats, err)
+	}
 }
 
 func TestServiceRelease(t *testing.T) {
@@ -523,6 +711,7 @@ func TestServiceConcurrentConfirmSameSessionOneCreated(t *testing.T) {
 	env := newTestEnv(t, 4)
 	env.seedScreening(screeningID)
 	hold := env.holdA1(t, screeningID)
+	env.seedCapturedPayment(hold.SessionID)
 
 	type outcome struct {
 		res appbooking.ConfirmResult

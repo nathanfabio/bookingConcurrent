@@ -12,9 +12,9 @@ import (
 )
 
 const createScreening = `-- name: CreateScreening :one
-INSERT INTO screenings (movie_id, starts_at, rows, seats_per_row)
-VALUES ($1, $2, $3, $4)
-RETURNING id, movie_id, starts_at, rows, seats_per_row, created_at
+INSERT INTO screenings (movie_id, starts_at, rows, seats_per_row, price_cents)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, movie_id, starts_at, rows, seats_per_row, created_at, price_cents
 `
 
 type CreateScreeningParams struct {
@@ -22,14 +22,18 @@ type CreateScreeningParams struct {
 	StartsAt    pgtype.Timestamptz
 	Rows        []string
 	SeatsPerRow int32
+	PriceCents  int32
 }
 
+// price_cents is stated explicitly on every insert (migration 00008
+// dropped the column DEFAULT on purpose: no silent implicit prices).
 func (q *Queries) CreateScreening(ctx context.Context, arg CreateScreeningParams) (Screening, error) {
 	row := q.db.QueryRow(ctx, createScreening,
 		arg.MovieID,
 		arg.StartsAt,
 		arg.Rows,
 		arg.SeatsPerRow,
+		arg.PriceCents,
 	)
 	var i Screening
 	err := row.Scan(
@@ -39,12 +43,13 @@ func (q *Queries) CreateScreening(ctx context.Context, arg CreateScreeningParams
 		&i.Rows,
 		&i.SeatsPerRow,
 		&i.CreatedAt,
+		&i.PriceCents,
 	)
 	return i, err
 }
 
 const getScreening = `-- name: GetScreening :one
-SELECT id, movie_id, starts_at, rows, seats_per_row, created_at FROM screenings WHERE id = $1
+SELECT id, movie_id, starts_at, rows, seats_per_row, created_at, price_cents FROM screenings WHERE id = $1
 `
 
 func (q *Queries) GetScreening(ctx context.Context, id string) (Screening, error) {
@@ -57,12 +62,13 @@ func (q *Queries) GetScreening(ctx context.Context, id string) (Screening, error
 		&i.Rows,
 		&i.SeatsPerRow,
 		&i.CreatedAt,
+		&i.PriceCents,
 	)
 	return i, err
 }
 
 const listScreeningsByMovie = `-- name: ListScreeningsByMovie :many
-SELECT id, movie_id, starts_at, rows, seats_per_row, created_at FROM screenings
+SELECT id, movie_id, starts_at, rows, seats_per_row, created_at, price_cents FROM screenings
 WHERE movie_id = $1
 ORDER BY starts_at
 `
@@ -83,6 +89,7 @@ func (q *Queries) ListScreeningsByMovie(ctx context.Context, movieID string) ([]
 			&i.Rows,
 			&i.SeatsPerRow,
 			&i.CreatedAt,
+			&i.PriceCents,
 		); err != nil {
 			return nil, err
 		}

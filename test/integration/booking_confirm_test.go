@@ -52,7 +52,7 @@ func newBookingFixture(t *testing.T, nUsers int) *bookingFixture {
 	}
 	scr, err := screenings.Create(ctx, domainmovie.Screening{
 		MovieID: movie.ID, StartsAt: time.Now().Add(time.Hour),
-		Rows: []string{"A", "B"}, SeatsPerRow: 3,
+		Rows: []string{"A", "B"}, SeatsPerRow: 3, PriceCents: 1500,
 	})
 	if err != nil {
 		t.Fatalf("create screening: %v", err)

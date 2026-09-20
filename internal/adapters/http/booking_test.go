@@ -30,6 +30,7 @@ type bookingEnv struct {
 	bookings   *memory.BookingStore
 	screenings *memory.ScreeningStore
 	movies     *memory.MovieStore
+	payments   *memory.PaymentStore
 	svc        *appbooking.Service
 	catalog    *appcatalog.Service
 }
@@ -52,13 +53,15 @@ func newBookingEnv(maxHolds int) *bookingEnv {
 		bookings:   memory.NewBookingStore(clock),
 		screenings: memory.NewScreeningStore(),
 		movies:     memory.NewMovieStore(),
+		payments:   memory.NewPaymentStore(clock),
 	}
-	env.svc = appbooking.NewService(env.holds, env.bookings, env.screenings, bookingTestTTL, clock.Now)
+	env.svc = appbooking.NewService(env.holds, env.bookings, env.screenings, env.payments, bookingTestTTL, clock.Now)
 	env.catalog = appcatalog.NewService(env.movies, env.screenings)
 	return env
 }
 
-// seedCatalog registers the movie and a 2x3 screening (rows A-B, seats 1-3).
+// seedCatalog registers the movie and a 2x3 screening (rows A-B, seats
+// 1-3) priced at 1200 cents.
 func (env *bookingEnv) seedCatalog() {
 	env.movies.Add(domainmovie.Movie{
 		ID: testMovie, Title: "The Concurrency Menace", Synopsis: "races",
@@ -68,7 +71,14 @@ func (env *bookingEnv) seedCatalog() {
 		ID: testScreening, MovieID: testMovie,
 		StartsAt: bookingTestStart.Add(24 * time.Hour),
 		Rows:     []string{"A", "B"}, SeatsPerRow: 3,
+		PriceCents: 1200,
 	})
+}
+
+// seedCaptured satisfies the M5 confirm gate (ADR 0008): tests that expect
+// a SUCCESSFUL confirm call this with the session first.
+func (env *bookingEnv) seedCaptured(sessionID string) {
+	env.payments.SeedCaptured(context.Background(), sessionID, "pi_fake_"+sessionID, 1200)
 }
 
 // reqAs builds a request with the authenticated user injected the way
@@ -289,6 +299,7 @@ func TestConfirmHandler(t *testing.T) {
 		env := newBookingEnv(4)
 		env.seedCatalog()
 		session := holdFirst(t, env)
+		env.seedCaptured(session)
 
 		rec := httptest.NewRecorder()
 		ConfirmHandler(env.svc).ServeHTTP(rec, pathReq(http.MethodPost, "/holds/"+session+"/confirm", "", aliceID, map[string]string{"sessionID": session}))
@@ -309,8 +320,9 @@ func TestConfirmHandler(t *testing.T) {
 		env := newBookingEnv(4)
 		env.seedCatalog()
 		decorated := &failingRelease{inner: env.holds}
-		svc := appbooking.NewService(decorated, env.bookings, env.screenings, bookingTestTTL, env.clock.Now)
+		svc := appbooking.NewService(decorated, env.bookings, env.screenings, env.payments, bookingTestTTL, env.clock.Now)
 		session := holdFirst(t, env)
+		env.seedCaptured(session)
 
 		decorated.setFail(true) // cleanup fails -> the hold survives -> client retries
 		first := httptest.NewRecorder()
@@ -384,6 +396,7 @@ func TestConfirmHandler(t *testing.T) {
 		env := newBookingEnv(4)
 		env.seedCatalog()
 		session := holdFirst(t, env)
+		env.seedCaptured(session) // pass the payment gate so the seat conflict is what fires
 		// A rival booking lands on the same seat before alice confirms.
 		if _, err := env.bookings.Confirm(context.Background(), domain.Booking{
 			SessionID: "rival-session", ScreeningID: testScreening,

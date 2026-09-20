@@ -14,3 +14,4 @@ the history is part of the learning value.
 | 0005 | [Password hashing: argon2id with explicit, reasoned parameters](0005-argon2id-password-hashing.md) | Accepted |
 | 0006 | [Booking consistency model: Postgres commits, Redis follows](0006-booking-consistency-model.md) | Accepted |
 | 0007 | [Refresh-token transport: httpOnly cookie, access token in JSON](0007-refresh-cookie-transport.md) | Accepted |
+| 0008 | [Payments: fake sandbox gateway, webhook capture, capture-gated confirm](0008-payments-fake-sandbox-capture-gate.md) | Accepted |

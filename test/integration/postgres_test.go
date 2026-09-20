@@ -155,6 +155,7 @@ func TestMovieAndScreeningRepositoryRoundTrip(t *testing.T) {
 		StartsAt:    time.Now().Add(24 * time.Hour).Truncate(time.Minute),
 		Rows:        []string{"A", "B", "C"},
 		SeatsPerRow: 4,
+		PriceCents:  1500,
 	})
 	if err != nil {
 		t.Fatalf("create screening: %v", err)
@@ -205,7 +206,7 @@ func TestConfirmedBookingsArbiter(t *testing.T) {
 	}
 	scr, err := screenings.Create(ctx, domainmovie.Screening{
 		MovieID: movie.ID, StartsAt: time.Now().Add(time.Hour),
-		Rows: []string{"A"}, SeatsPerRow: 2,
+		Rows: []string{"A"}, SeatsPerRow: 2, PriceCents: 1500,
 	})
 	if err != nil {
 		t.Fatalf("create screening: %v", err)

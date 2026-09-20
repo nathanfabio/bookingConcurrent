@@ -50,6 +50,9 @@ jobs:
       RABBITMQ_URL: amqp://ci:ci@localhost:5672/ci
       AUTH_JWT_SECRET: ci-placeholder-not-a-real-secret-000
       PAYMENT_PROVIDER: fake
+      # Pinned CI value, not a secret: it only ever signs webhooks the CI
+      # test run itself forges against the in-process fake gateway (ADR 0008).
+      PAYMENT_FAKE_WEBHOOK_SECRET: ci-fake-webhook-secret-not-real-000
 
     steps:
       - uses: actions/checkout@v4

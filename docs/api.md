@@ -27,6 +27,9 @@ failure.
 | `seat_taken` | a live HOLD owns the seat — may free up when the hold expires |
 | `seat_booked` | a CONFIRMED booking owns the seat — it will not free up on its own |
 | `hold_limit_exceeded` | the user already holds the maximum number of seats (`MAX_ACTIVE_HOLDS`) |
+| `payment_required` | no captured payment for the session — start (or finish) checkout |
+| `payment_declined` | the gateway refused the capture — a superseding intent can be minted |
+| `webhook_invalid` | provider webhook failed verification — ONE opaque code for every failure mode (ADR 0008) |
 
 ## Authentication model (ADR 0004, 0005, 0007)
 
@@ -156,8 +159,11 @@ One movie's showings, chronological. Unknown movie → `404 not_found`
 Response `200`:
 
 ```json
-{ "screenings": [ { "id": "…", "movie_id": "…", "starts_at": "…", "rows": ["A","B","C","D","E","F"], "seats_per_row": 10, "created_at": "…" } ] }
+{ "screenings": [ { "id": "…", "movie_id": "…", "starts_at": "…", "rows": ["A","B","C","D","E","F"], "seats_per_row": 10, "price_cents": 1450, "created_at": "…" } ] }
 ```
+
+`price_cents` is what a payment intent for this screening will freeze
+(M5, ADR 0008) — clients see the price before holding.
 
 ### `GET /screenings/{screeningID}/seats` — seat map
 
@@ -228,8 +234,10 @@ curl -i -X POST localhost:8080/holds \
 
 ### `POST /holds/{sessionID}/confirm`
 
-Turn the caller's live hold into the durable booking. The commit point is
-one Postgres transaction — booking row + `BookingConfirmed` outbox row
+Turn the caller's live hold into the durable booking. Since M5 the confirm
+is **payment-gated** (ADR 0008): a captured payment must exist for the
+session, or the answer is `402 payment_required`. The commit point is one
+Postgres transaction — booking row + `BookingConfirmed` outbox row
 (ADR 0003/0006); the Redis hold is released best-effort afterwards.
 
 Response `201` (first confirm) or `200` (idempotent replay — the same
@@ -239,7 +247,9 @@ booking returned again):
 { "id": "…", "session_id": "…", "screening_id": "…", "row": "A", "number": 1, "status": "confirmed", "confirmed_at": "…" }
 ```
 
-Errors: `404 not_found` (unknown/foreign/expired session),
+Errors: `404 not_found` (unknown/foreign/expired session — the expiry
+hard-NO fires even with money captured, ADR 0006/0008),
+`402 payment_required` (no captured payment yet),
 `409 seat_booked` (the seat lost a race to another session's booking).
 
 ```bash
@@ -257,6 +267,105 @@ curl -i -X DELETE localhost:8080/holds/$SESSION_ID \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
+## Payments (M5, protected unless noted)
+
+The checkout flow (CLAUDE.md §7, ADR 0008): hold → payment intent →
+capture (client confirm OR provider webhook) → booking confirm. The M5
+gateway is the clearly-labeled in-process fake sandbox
+(`PAYMENT_PROVIDER=fake`); `stripe` has a config slot but fails at boot
+until the Stripe milestone. Sandbox intent IDs are recognizable
+(`pi_fake_…`) so fake money is never mistaken for real.
+
+### `POST /holds/{sessionID}/payment-intent`
+
+Freeze the screening's price into a gateway intent for the caller's live
+hold. Idempotent: an existing active intent for the session is returned
+again, not re-minted (one active intent per session is enforced by the
+`payments_active_session_unique` partial index, migration 00009).
+
+Response `201` (created) or `200` (idempotent replay):
+
+```json
+{
+  "payment_id": "…", "session_id": "…", "intent_id": "pi_fake_…",
+  "amount_cents": 1450, "currency": "usd", "status": "intent",
+  "hold_expires_at": "…"
+}
+```
+
+`hold_expires_at` is the pay-by deadline: after it, capture still records
+provider truth, but confirm refuses the booking (ADR 0006's hard NO).
+There is no `client_secret` field — the fake has none, and inventing one
+would be dishonest API design (ADR 0008).
+
+Errors: `404 not_found` (unknown/foreign/expired session — byte-identical,
+no probing through payment routes either).
+
+```bash
+curl -i -X POST localhost:8080/holds/$SESSION_ID/payment-intent \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+### `POST /holds/{sessionID}/payment-intent/confirm`
+
+The client-confirm capture — the sandbox equivalent of Stripe's
+client-side `paymentIntent.confirm()`, and the dev trigger for "the buyer
+paid". The production-shaped path IS the fast path; there is no backdoor
+route. The hold is re-checked BEFORE the gateway is called, so this
+endpoint never charges an expired hold.
+
+Response `200` (first capture and replay alike — capture is idempotent):
+
+```json
+{ "payment_id": "…", "intent_id": "pi_fake_…", "status": "captured", "amount_cents": 1450, "currency": "usd", "updated_at": "…" }
+```
+
+Errors: `404 not_found` (unknown/foreign/expired session),
+`402 payment_required` (no active intent — create one first),
+`402 payment_declined` (gateway refused; the intent is marked failed and a
+superseding intent can be minted).
+
+```bash
+curl -i -X POST localhost:8080/holds/$SESSION_ID/payment-intent/confirm \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+### `POST /webhooks/payment` — public, signature-verified
+
+The provider callback path. PUBLIC: the signature IS its authentication —
+a provider cannot present a user JWT, so this route is deliberately not
+wrapped in the auth middleware.
+
+Verification (ADR 0008): header `Payment-Signature: t=<unix>,v1=<hex>`
+where `v1 = HMAC-SHA256(secret, "<t>.<rawBody>")` over the EXACT request
+bytes, ±300s replay tolerance, constant-time compare. ANY verification
+failure answers one opaque `400 webhook_invalid` — which check failed is
+never revealed. Every signature-valid event answers
+`200 { "received": true }`, including duplicates, unknown intents, and
+unhandled kinds (ack policy: retrying them cannot change the outcome).
+
+Event body (fake provider's wire format):
+
+```json
+{ "kind": "payment.captured", "intent_id": "pi_fake_…", "amount_cents": 1450 }
+```
+
+`kind` is `payment.captured` or `payment.failed`. The amount is
+cross-checked against the frozen intent amount; a mismatch fails the
+payment and is logged loudly (provider numbers are input, not truth).
+
+Signing a delivery by hand against the dev server (secret =
+`PAYMENT_FAKE_WEBHOOK_SECRET` from `.env`):
+
+```bash
+BODY='{"kind":"payment.captured","intent_id":"'"$INTENT_ID"'","amount_cents":1450}'
+T=$(date +%s)
+V1=$(printf '%s.%s' "$T" "$BODY" \
+  | openssl dgst -sha256 -hmac "$PAYMENT_FAKE_WEBHOOK_SECRET" -hex | awk '{print $NF}')
+curl -i -X POST localhost:8080/webhooks/payment \
+  -H "Payment-Signature: t=$T,v1=$V1" -d "$BODY"
+```
+
 ## Development seed credentials
 
 `make run` seeds a development user (documented non-secret, dev only):
@@ -264,16 +373,17 @@ curl -i -X DELETE localhost:8080/holds/$SESSION_ID \
 - email: `dev@example.com`
 - password: `booking-dev-password`
 
-It also seeds two movies with screenings (geometry A–F × 10) so the catalog
-and seat-map endpoints have data to browse.
+It also seeds two movies with screenings (geometry A–F × 10, prices 1450
+and 1250 cents) so the catalog, seat-map, and payment endpoints have data
+to browse.
 
 ## Not yet implemented
 
 - Rate limiting on `/auth/login` and `POST /holds` (brute-force / abuse
   protection, CLAUDE.md §5) — arrives with the middleware hardening
   milestone.
-- Payments (hold → payment intent → capture → confirm, CLAUDE.md §7) —
-  M5 plugs into the confirm path this milestone built.
+- Stripe test-mode adapter, refunds, and auto-refund of the
+  captured-after-expiry window — ADR 0008's explicit deferrals.
 - Hold-expiry sweeper (`cmd/worker`) — deferred; correctness does not
   depend on it (ADR 0006).
 - Outbox relay / `BookingConfirmed` consumer — M6.
