@@ -366,6 +366,64 @@ curl -i -X POST localhost:8080/webhooks/payment \
   -H "Payment-Signature: t=$T,v1=$V1" -d "$BODY"
 ```
 
+## Events (M6) — broker contract, not HTTP
+
+Confirmed bookings emit one `BookingConfirmed` event through the
+transactional outbox (ADR 0006 wrote it, ADR 0009 publishes it):
+
+```
+confirm tx (booking + outbox row) → relay (cmd/worker, every
+WORKER_RELAY_POLL_INTERVAL) → exchange "booking.events" (durable topic)
+→ routing key "BookingConfirmed" → queue "booking.notifications"
+(durable) → consumer → processed_events claim (dedupe) → notification stub
+```
+
+Transport envelope (AMQP):
+
+| Property    | Value                                              |
+|-------------|----------------------------------------------------|
+| exchange    | `RABBITMQ_EXCHANGE` (default `booking.events`, topic, durable) |
+| routing key | the event type, identity-mapped (`BookingConfirmed`) |
+| queue       | `RABBITMQ_QUEUE` (default `booking.notifications`, durable, bound to the routing key) |
+| message_id  | the outbox row's `event_id` UUID — the consumers' dedupe key |
+| type        | `BookingConfirmed`                                  |
+| content     | `application/json`, persistent delivery mode        |
+| headers     | W3C `traceparent` (publish and consume spans join one trace) |
+| semantics   | at-least-once: duplicates are normal, consumers MUST dedupe on `message_id` |
+
+Payload (snake_case, pinned by reflection tests on BOTH the writer —
+`bookingConfirmedPayload` in `internal/adapters/postgres` — and the
+consumer — `BookingConfirmed` in `internal/application/notification`;
+changing a field means changing this table and both structs):
+
+| Field          | Type     | Meaning                                        |
+|----------------|----------|------------------------------------------------|
+| `booking_id`   | string   | the database-assigned confirmed booking id      |
+| `session_id`   | string   | the hold session that produced the booking      |
+| `screening_id` | string   | the screening the seat belongs to               |
+| `row`          | string   | seat row letter                                 |
+| `number`       | int      | seat number within the row                      |
+| `user_id`      | string   | the buyer                                       |
+| `confirmed_at` | RFC 3339 | when the booking committed (database clock)     |
+
+```json
+{
+  "booking_id": "0e11…",
+  "session_id": "5b4a…",
+  "screening_id": "aa90…",
+  "row": "C",
+  "number": 7,
+  "user_id": "c3d2…",
+  "confirmed_at": "2026-10-10T21:14:02.481Z"
+}
+```
+
+The M6 consumer side effect is a structured log line
+(`adapters/notification.LogNotifier`). Its idempotency is the
+`processed_events` claim table (migration 00010): exactly one winner per
+`event_id` under any interleaving, proven by
+`TestProcessedEventClaimConcurrentExactlyOneWinner`.
+
 ## Development seed credentials
 
 `make run` seeds a development user (documented non-secret, dev only):
@@ -386,4 +444,3 @@ to browse.
   captured-after-expiry window — ADR 0008's explicit deferrals.
 - Hold-expiry sweeper (`cmd/worker`) — deferred; correctness does not
   depend on it (ADR 0006).
-- Outbox relay / `BookingConfirmed` consumer — M6.

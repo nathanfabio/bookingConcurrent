@@ -35,6 +35,23 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      # Real broker for the M6 messaging integration tests (outbox relay →
+      # RabbitMQ → consumer dedupe). Credentials/vhost match the
+      # RABBITMQ_URL env below EXACTLY — the URL placeholder M0 committed
+      # became real the day the first broker test landed.
+      rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: ci
+          RABBITMQ_DEFAULT_PASS: ci
+          RABBITMQ_DEFAULT_VHOST: ci
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
 
     env:
       REDIS_ADDR: localhost:6379

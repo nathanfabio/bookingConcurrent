@@ -118,8 +118,10 @@ func TestBookingLifecycle(t *testing.T) {
 		t.Errorf("seat A1 after confirm = %q, want booked", status)
 	}
 
-	// The BookingConfirmed outbox row landed with the booking (the relay
-	// that publishes it is M6; until then it must sit pending).
+	// The BookingConfirmed outbox row landed with the booking. It must sit
+	// PENDING here: the relay lives in cmd/worker, which this test does not
+	// run — publishing is outbox_relay_test.go's half of the contract, and
+	// this assertion pins the writing half (ADR 0006's commit point).
 	var pending int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FROM outbox WHERE event_type = 'BookingConfirmed' AND payload->>'session_id' = $1 AND published_at IS NULL`,

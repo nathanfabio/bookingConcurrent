@@ -64,6 +64,7 @@ type Config struct {
 	Postgres  Postgres
 	Auth      Auth
 	Broker    Broker
+	Worker    Worker
 	Payment   Payment
 	Telemetry Telemetry
 }
@@ -124,9 +125,32 @@ type Auth struct {
 	RefreshTokenTTL time.Duration
 }
 
-// Broker holds the RabbitMQ connection settings.
+// Broker holds the RabbitMQ settings (CLAUDE.md §6, ADR 0009). URL is the
+// connection string; the rest names the topology both the publisher and the
+// consumer declare idempotently at every connect (see
+// internal/adapters/messaging — declaring from BOTH sides closes the
+// publish-before-queue-exists loss window).
 type Broker struct {
-	URL string
+	URL      string
+	Exchange string
+	Queue    string
+	// Prefetch bounds a consumer's unacked in-flight deliveries (Qos).
+	Prefetch int
+}
+
+// Worker holds the tuning knobs for cmd/worker's background jobs. The API
+// validates these too (config.Load is shared) and ignores them — one
+// validated config for every binary beats per-binary loaders at this scale;
+// the alternative (splitting Load) is a refactor with no behavioral payoff.
+type Worker struct {
+	// RelayPollInterval is how often the outbox relay runs a pass. Polling
+	// (vs LISTEN/NOTIFY) is the deliberate choice: it is stateless, survives
+	// Postgres restarts without a notification channel to rebuild, and a
+	// few seconds of publish latency is invisible next to a 5-minute hold
+	// TTL (ADR 0009).
+	RelayPollInterval time.Duration
+	// RelayBatchSize bounds one relay pass (the SQL LIMIT).
+	RelayBatchSize int
 }
 
 // Payment holds payment gateway selection and credentials (CLAUDE.md §7).
@@ -231,6 +255,17 @@ func Load() (*Config, error) {
 	} else if !strings.HasPrefix(cfg.Broker.URL, "amqp://") && !strings.HasPrefix(cfg.Broker.URL, "amqps://") {
 		fail("RABBITMQ_URL must start with amqp:// or amqps://")
 	}
+	// Topology names have safe defaults (unlike addresses/credentials):
+	// they identify OUR objects, not a deployment's, and every process
+	// declares the topology idempotently — a mismatch against a live broker
+	// fails the declare loudly instead of silently forking the topology.
+	cfg.Broker.Exchange = withDefault("RABBITMQ_EXCHANGE", "booking.events")
+	cfg.Broker.Queue = withDefault("RABBITMQ_QUEUE", "booking.notifications")
+	cfg.Broker.Prefetch = intInRange("RABBITMQ_PREFETCH", 10, 1, 1000, fail)
+
+	// -- worker ------------------------------------------------------------------------
+	cfg.Worker.RelayPollInterval = duration("WORKER_RELAY_POLL_INTERVAL", 5*time.Second, fail)
+	cfg.Worker.RelayBatchSize = intInRange("WORKER_RELAY_BATCH_SIZE", 100, 1, 10000, fail)
 
 	// -- payments ---------------------------------------------------------------------
 	cfg.Payment.Provider = PaymentProvider(withDefault("PAYMENT_PROVIDER", string(PaymentProviderFake)))

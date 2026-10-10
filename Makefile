@@ -75,6 +75,14 @@ run: ## Run the API locally (requires .env and `make up`)
 	@test -f .env || { echo "no .env found — run: cp .env.example .env" >&2; exit 1; }
 	set -a; source ./.env; set +a; exec go run ./cmd/api
 
+.PHONY: run-worker
+run-worker: ## Run the background worker locally (requires .env and `make up`)
+	@test -f .env || { echo "no .env found — run: cp .env.example .env" >&2; exit 1; }
+	# SERVICE_NAME is overridden inline: one shared .env cannot express
+	# per-binary names, and distinct names keep the two processes apart in
+	# logs and traces.
+	set -a; source ./.env; set +a; SERVICE_NAME=booking-worker exec go run ./cmd/worker
+
 .PHONY: tidy
 tidy: ## go mod tidy
 	go mod tidy

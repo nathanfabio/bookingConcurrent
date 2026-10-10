@@ -33,6 +33,11 @@ func setValidEnv(t *testing.T) {
 		"AUTH_ACCESS_TOKEN_TTL":         "15m",
 		"AUTH_REFRESH_TOKEN_TTL":        "720h",
 		"RABBITMQ_URL":                  "amqp://booking:pw@localhost:5672/booking",
+		"RABBITMQ_EXCHANGE":             "booking.events",
+		"RABBITMQ_QUEUE":                "booking.notifications",
+		"RABBITMQ_PREFETCH":             "10",
+		"WORKER_RELAY_POLL_INTERVAL":    "5s",
+		"WORKER_RELAY_BATCH_SIZE":       "100",
 		"PAYMENT_PROVIDER":              "fake",
 		"PAYMENT_FAKE_WEBHOOK_SECRET":   strings.Repeat("w", 32),
 		"PAYMENT_STRIPE_SECRET_KEY":     "",
@@ -67,6 +72,21 @@ func TestLoadValid(t *testing.T) {
 	if cfg.Log.Level != slog.LevelInfo {
 		t.Errorf("Log.Level = %v, want info", cfg.Log.Level)
 	}
+	if cfg.Broker.Exchange != "booking.events" {
+		t.Errorf("Broker.Exchange = %q, want booking.events", cfg.Broker.Exchange)
+	}
+	if cfg.Broker.Queue != "booking.notifications" {
+		t.Errorf("Broker.Queue = %q, want booking.notifications", cfg.Broker.Queue)
+	}
+	if cfg.Broker.Prefetch != 10 {
+		t.Errorf("Broker.Prefetch = %d, want 10", cfg.Broker.Prefetch)
+	}
+	if cfg.Worker.RelayPollInterval != 5*time.Second {
+		t.Errorf("Worker.RelayPollInterval = %s, want 5s", cfg.Worker.RelayPollInterval)
+	}
+	if cfg.Worker.RelayBatchSize != 100 {
+		t.Errorf("Worker.RelayBatchSize = %d, want 100", cfg.Worker.RelayBatchSize)
+	}
 	if cfg.Payment.Provider != PaymentProviderFake {
 		t.Errorf("Payment.Provider = %q, want fake", cfg.Payment.Provider)
 	}
@@ -85,6 +105,8 @@ func TestLoadDefaults(t *testing.T) {
 		"ENV", "SERVICE_NAME", "HTTP_READ_TIMEOUT", "HTTP_WRITE_TIMEOUT",
 		"HTTP_SHUTDOWN_TIMEOUT", "LOG_LEVEL", "REDIS_DB", "REDIS_HOLD_TTL",
 		"MAX_ACTIVE_HOLDS", "POSTGRES_SSLMODE", "PAYMENT_PROVIDER", "OTEL_ENABLED",
+		"RABBITMQ_EXCHANGE", "RABBITMQ_QUEUE", "RABBITMQ_PREFETCH",
+		"WORKER_RELAY_POLL_INTERVAL", "WORKER_RELAY_BATCH_SIZE",
 	} {
 		t.Setenv(k, "")
 	}
@@ -104,6 +126,21 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Booking.MaxActiveHolds != 4 {
 		t.Errorf("default MaxActiveHolds = %d, want 4", cfg.Booking.MaxActiveHolds)
+	}
+	if cfg.Broker.Exchange != "booking.events" {
+		t.Errorf("default Broker.Exchange = %q, want booking.events", cfg.Broker.Exchange)
+	}
+	if cfg.Broker.Queue != "booking.notifications" {
+		t.Errorf("default Broker.Queue = %q, want booking.notifications", cfg.Broker.Queue)
+	}
+	if cfg.Broker.Prefetch != 10 {
+		t.Errorf("default Broker.Prefetch = %d, want 10", cfg.Broker.Prefetch)
+	}
+	if cfg.Worker.RelayPollInterval != 5*time.Second {
+		t.Errorf("default Worker.RelayPollInterval = %s, want 5s", cfg.Worker.RelayPollInterval)
+	}
+	if cfg.Worker.RelayBatchSize != 100 {
+		t.Errorf("default Worker.RelayBatchSize = %d, want 100", cfg.Worker.RelayBatchSize)
 	}
 	if cfg.Payment.Provider != PaymentProviderFake {
 		t.Errorf("default Payment.Provider = %q, want fake", cfg.Payment.Provider)
@@ -156,6 +193,10 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"bad provider", "PAYMENT_PROVIDER", "paypal", "PAYMENT_PROVIDER"},
 		{"bad bool", "OTEL_ENABLED", "sometimes", "OTEL_ENABLED"},
 		{"bad broker scheme", "RABBITMQ_URL", "http://nope", "RABBITMQ_URL"},
+		{"prefetch out of range", "RABBITMQ_PREFETCH", "0", "RABBITMQ_PREFETCH"},
+		{"prefetch not an int", "RABBITMQ_PREFETCH", "lots", "RABBITMQ_PREFETCH"},
+		{"bad relay interval", "WORKER_RELAY_POLL_INTERVAL", "soon", "WORKER_RELAY_POLL_INTERVAL"},
+		{"relay batch out of range", "WORKER_RELAY_BATCH_SIZE", "0", "WORKER_RELAY_BATCH_SIZE"},
 		{"http addr without port", "HTTP_ADDR", "localhost", "HTTP_ADDR"},
 	}
 	for _, tc := range cases {

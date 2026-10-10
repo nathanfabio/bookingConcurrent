@@ -29,8 +29,10 @@ type bookingFixture struct {
 	users     []string
 }
 
-// queryRow runs a one-off assertion query against the fixture's pool (the
-// outbox has no read query by design — its only reader is the M6 relay).
+// queryRow runs a one-off assertion query against the fixture's pool. The
+// outbox's GENERATED queries stay write-and-relay-only by design (insert on
+// confirm, list/mark in the relay); assertion queries like "is the row still
+// pending?" are test-privileged raw SQL, not a port anyone should grow.
 func (f *bookingFixture) queryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	return f.pool.QueryRow(ctx, sql, args...)
 }

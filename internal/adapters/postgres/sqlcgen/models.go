@@ -59,6 +59,12 @@ type Payment struct {
 	UpdatedAt        pgtype.Timestamptz
 }
 
+type ProcessedEvent struct {
+	EventID     string
+	EventType   string
+	ProcessedAt pgtype.Timestamptz
+}
+
 type RefreshToken struct {
 	ID         string
 	UserID     string

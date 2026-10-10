@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -47,6 +48,11 @@ func run() error {
 	}
 
 	log := logger.New(cfg.Env, cfg.Log.Level)
+	// Application, middleware, and adapter code log through slog.*Context,
+	// which routes to the DEFAULT logger — make the configured one
+	// (env-driven level and format) the process default, or every request
+	// log silently bypasses LOG_LEVEL and the dev/prod format switch.
+	slog.SetDefault(log)
 	ctx := logger.WithContext(context.Background(), log)
 
 	// SIGTERM/SIGINT cancel the context; server.Run drains and exits.
