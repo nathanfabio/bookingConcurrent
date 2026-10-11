@@ -10,25 +10,38 @@ import (
 	"time"
 
 	appbooking "github.com/nathanfabio/bookingConcurrent/internal/application/booking"
+	appholdexpiry "github.com/nathanfabio/bookingConcurrent/internal/application/holdexpiry"
 	domain "github.com/nathanfabio/bookingConcurrent/internal/domain/booking"
 
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// Compile-time proof the adapter satisfies the port.
-var _ appbooking.HoldStore = (*HoldStore)(nil)
+// Compile-time proof the adapter satisfies BOTH ports over the same data:
+// the booking service's HoldStore and the sweeper's ExpiredHoldStore (two
+// consumers, two small interfaces — ADR 0001's shape, same as PaymentRepo).
+var (
+	_ appbooking.HoldStore           = (*HoldStore)(nil)
+	_ appholdexpiry.ExpiredHoldStore = (*HoldStore)(nil)
+)
 
-// Key schema (ADR 0002):
+// Key schema (ADR 0002, global member refined by ADR 0010):
 //
 //	seat:{screeningID}:{row}:{num}  -> holdToken            (SET NX EX)
 //	session:{sessionID}              -> hash{screening_id, row, num,
 //	                                      user_id, hold_token, expires_at}
 //	user:{userID}:holds              -> ZSET member=sessionID score=expiryUnix
-//	holds:expiring                   -> global ZSET, same shape
+//	holds:expiring                   -> ZSET member="userID:sessionID",
+//	                                      score=expiryUnix
 //
 // The seat key's VALUE is the hold token, not "1" or a user ID: release and
 // the expiry sweeper compare it before deleting, which is what keeps a late
 // operation on an old hold from destroying a newer hold of the same seat.
+//
+// The GLOBAL ZSET's member is composite because the sweeper must reclaim
+// the per-USER ZSET entry too, and by sweep time the session hash — the
+// only other place the userID lives — has usually TTL-expired (ADR 0010).
+// The user ZSET's member stays the bare sessionID: its KEY already carries
+// the userID, and release/sweep both know which user they are cleaning.
 const (
 	globalHoldsKey  = "holds:expiring"
 	seatPrefix      = "seat:"
@@ -96,7 +109,7 @@ if redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', tonumber(ARGV[2])) then
     'expires_at', ARGV[3])
   redis.call('EXPIRE', KEYS[2], tonumber(ARGV[2]))
   redis.call('ZADD', KEYS[3], ARGV[3], ARGV[5])
-  redis.call('ZADD', KEYS[4], ARGV[3], ARGV[5])
+  redis.call('ZADD', KEYS[4], ARGV[3], ARGV[9] .. ':' .. ARGV[5])
   return 'OK'
 end
 return 'TAKEN'
@@ -132,17 +145,66 @@ if redis.call('GET', seatKey) == token then
 end
 redis.call('DEL', KEYS[1])
 redis.call('ZREM', KEYS[2], ARGV[2])
-redis.call('ZREM', KEYS[3], ARGV[2])
+redis.call('ZREM', KEYS[3], ARGV[1] .. ':' .. ARGV[2])
 return 'OK'
 `
 
-// HoldStore is the Redis-backed implementation of booking.HoldStore.
+// sweepScript reclaims ONE expired hold, token-checked — the sweeper half
+// of ADR 0002's teardown rule ("the hold-expiry sweeper follows the same
+// rule"), landing with cmd/worker as promised (ADR 0010).
+//
+// KEYS[1] session key      KEYS[2] user holds ZSET   KEYS[3] global holds ZSET
+// ARGV[1] session ID       ARGV[2] composite member  ARGV[3] now (unix secs)
+//
+// Three outcomes:
+//
+//	GONE  — the session hash already TTL-expired (the normal case: hash,
+//	        seat key, and score all die at the same wall-clock moment).
+//	        Only bookkeeping remains, so only bookkeeping is removed. The
+//	        seat key is deliberately NOT touched here: it either expired
+//	        too, or it belongs to a NEWER hold — and a newer hold's key must
+//	        never die by an older hold's sweep.
+//	SWEPT — the hash outlived its expiry score (the ceiling-rounded TTL
+//	        keeps raw keys alive up to a second past ExpiresAt, ADR 0002).
+//	        Full teardown, with the same compare-and-delete as release: the
+//	        seat key dies ONLY if its value still equals this hold's token.
+//	ALIVE — score and hash disagree (unreachable via holdScript, which
+//	        writes both from the same value; only hand-tampered data gets
+//	        here). Defensive skip: never mutate on inconsistent state.
+//
+// Returns: "GONE" | "SWEPT" | "ALIVE"
+const sweepScript = `
+local expiresAt = redis.call('HGET', KEYS[1], 'expires_at')
+if not expiresAt then
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  redis.call('ZREM', KEYS[3], ARGV[2])
+  return 'GONE'
+end
+if tonumber(expiresAt) > tonumber(ARGV[3]) then
+  return 'ALIVE'
+end
+local token = redis.call('HGET', KEYS[1], 'hold_token')
+local seatKey = 'seat:' .. redis.call('HGET', KEYS[1], 'screening_id') ..
+  ':' .. redis.call('HGET', KEYS[1], 'row') ..
+  ':' .. redis.call('HGET', KEYS[1], 'num')
+if redis.call('GET', seatKey) == token then
+  redis.call('DEL', seatKey)
+end
+redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+redis.call('ZREM', KEYS[3], ARGV[2])
+return 'SWEPT'
+`
+
+// HoldStore is the Redis-backed implementation of booking.HoldStore and
+// holdexpiry.ExpiredHoldStore.
 type HoldStore struct {
 	client        *goredis.Client
 	holdTTL       time.Duration
 	maxHolds      int
 	holdScript    *goredis.Script
 	releaseScript *goredis.Script
+	sweepScript   *goredis.Script
 }
 
 // NewHoldStore wires the adapter. holdTTL and maxHolds come from validated
@@ -154,6 +216,7 @@ func NewHoldStore(client *goredis.Client, holdTTL time.Duration, maxHolds int) *
 		maxHolds:      maxHolds,
 		holdScript:    goredis.NewScript(holdScript),
 		releaseScript: goredis.NewScript(releaseScript),
+		sweepScript:   goredis.NewScript(sweepScript),
 	}
 }
 
@@ -309,4 +372,92 @@ func (s *HoldStore) HeldSeats(ctx context.Context, screeningID string) ([]domain
 		return nil, fmt.Errorf("booking: scan held seats: %w", err)
 	}
 	return seats, nil
+}
+
+// SweepExpired implements holdexpiry.ExpiredHoldStore: it walks the global
+// holds:expiring ZSET by score — the bounded, time-ordered work queue ADR
+// 0002 built it to be — and reclaims every hold expired at or before now,
+// up to limit members per call.
+//
+// The boundary is INCLUSIVE (score <= now.Unix()) on purpose: the domain
+// treats a hold as expired AT ExpiresAt (Hold.IsExpired: !now.Before(...)),
+// and the ZSET score is the same truncated-Unix value the session hash
+// stores and Get hands back — so sweep timing and CanBeConfirmed agree to
+// the second, and the ceiling-rounded TTL padding (ADR 0002) only ever
+// decides whether teardown arrives as SWEPT (hash still there) or GONE
+// (TTL beat us to it). Both are correct; neither frees a seat the domain
+// would still confirm.
+//
+// Per-member failures never fail the batch (the HeldSeats philosophy): one
+// corrupt member is logged and skipped — or, when unparseable, discarded,
+// because a poison member would otherwise re-enter every LIMIT window
+// forever. That discard path doubles as the upgrade route for pre-M6
+// bare-sessionID members, whose per-user entries are unrecoverable
+// (ADR 0010's documented consequence).
+func (s *HoldStore) SweepExpired(ctx context.Context, now time.Time, limit int) (int, error) {
+	// ZRangeArgs (not the deprecated ZRangeByScore): ByScore + Offset/Count
+	// is the same bounded score window, expressed in the Redis 6.2+ form.
+	members, err := s.client.ZRangeArgs(ctx, goredis.ZRangeArgs{
+		Key:     globalHoldsKey,
+		Start:   "-inf",
+		Stop:    strconv.FormatInt(now.Unix(), 10),
+		ByScore: true,
+		Offset:  0,
+		Count:   int64(limit),
+	}).Result()
+	if err != nil {
+		return 0, fmt.Errorf("booking: sweep: enumerate expired holds: %w", err)
+	}
+
+	swept := 0
+	for _, member := range members {
+		userID, sessionID, ok := splitGlobalMember(member)
+		if !ok {
+			slog.ErrorContext(ctx, "discarding unparseable global holds member (corrupt or pre-M6 legacy)",
+				slog.String("member", member))
+			if err := s.client.ZRem(ctx, globalHoldsKey, member).Err(); err != nil {
+				slog.WarnContext(ctx, "could not discard unparseable global holds member; it will retry next sweep",
+					slog.String("error", err.Error()))
+			}
+			continue
+		}
+
+		keys := []string{sessionKey(sessionID), userHoldsKey(userID), globalHoldsKey}
+		res, err := s.sweepScript.Run(ctx, s.client, keys, sessionID, member, now.Unix()).Text()
+		if err != nil {
+			// Script-level failure (Redis hiccup mid-batch): log and move
+			// on — the member stays queued for the next tick.
+			slog.ErrorContext(ctx, "sweep script failed for member; skipping",
+				slog.String("session_id", sessionID),
+				slog.String("error", err.Error()))
+			continue
+		}
+		switch res {
+		case "GONE", "SWEPT":
+			swept++
+		case "ALIVE":
+			// Score and hash disagree — only hand-tampered data gets here.
+			// Leave it alone (never mutate on inconsistent state); it stops
+			// matching the score window the moment its real expiry passes.
+			slog.WarnContext(ctx, "sweep skipped a hold whose hash disagrees with its score",
+				slog.String("session_id", sessionID))
+		default:
+			slog.ErrorContext(ctx, "sweep script returned unexpected result",
+				slog.String("result", res),
+				slog.String("session_id", sessionID))
+		}
+	}
+	return swept, nil
+}
+
+// splitGlobalMember parses a composite "userID:sessionID" global-ZSET
+// member. The split is on the LAST colon: the sessionID is a server-minted
+// UUID and therefore guaranteed colon-free, while a userID in principle is
+// not — so the rightmost segment is the only unambiguous sessionID.
+func splitGlobalMember(member string) (userID, sessionID string, ok bool) {
+	i := strings.LastIndex(member, ":")
+	if i <= 0 || i == len(member)-1 {
+		return "", "", false
+	}
+	return member[:i], member[i+1:], true
 }

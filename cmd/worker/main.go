@@ -1,7 +1,7 @@
 // Command worker is the booking system's background process: the outbox
 // relay (Postgres → RabbitMQ), the BookingConfirmed consumer (RabbitMQ →
-// dedupe → notification stub), and — from the sweeper milestone — the
-// hold-expiry sweeper (ADR 0002's deferred token-checked cleanup).
+// dedupe → notification stub), and the hold-expiry sweeper (ADR 0002's
+// deferred token-checked cleanup, landed in ADR 0010).
 //
 // Like cmd/api, this file is the composition root and nothing else: config,
 // dependencies, wiring, supervision. The job MECHANICS live in platform/
@@ -23,6 +23,8 @@ import (
 	messagingadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/messaging"
 	notificationadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/notification"
 	postgresadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/postgres"
+	redisadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/redis"
+	appholdexpiry "github.com/nathanfabio/bookingConcurrent/internal/application/holdexpiry"
 	appnotification "github.com/nathanfabio/bookingConcurrent/internal/application/notification"
 	appoutbox "github.com/nathanfabio/bookingConcurrent/internal/application/outbox"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/config"
@@ -122,6 +124,18 @@ func run() error {
 		return fmt.Errorf("consumer: %w", err)
 	}
 
+	// --- transient hold store (sweeper) ------------------------------------------------
+	// Same constructor as the API, but the worker only ever calls
+	// SweepExpired through the holdexpiry port: Redis TTL keeps
+	// availability correct on its own (ADR 0006) — the sweeper reconciles
+	// the bookkeeping ZSETs so hold-limit slots come back deterministically
+	// instead of lingering until the next hold attempt (ADR 0002's deferred
+	// "required component", ADR 0010).
+	redisClient := redisadapter.NewClient(cfg.Redis)
+	defer func() { _ = redisClient.Close() }()
+	holdStore := redisadapter.NewHoldStore(redisClient, cfg.Redis.HoldTTL, cfg.Booking.MaxActiveHolds)
+	sweeper := appholdexpiry.NewSweeper(holdStore, cfg.Worker.SweepBatchSize, time.Now)
+
 	// --- jobs -----------------------------------------------------------------------
 	relay := appoutbox.NewRelay(
 		postgresadapter.NewOutboxRepo(pool),
@@ -195,15 +209,36 @@ func run() error {
 		},
 	}
 
+	sweeperJob := platformworker.Job{
+		Name: "hold-expiry-sweeper",
+		Run: func(ctx context.Context) error {
+			return platformworker.Tick(ctx, cfg.Worker.SweepInterval, func(ctx context.Context) error {
+				// LOG AND CONTINUE, same policy as the relay: a failed
+				// sweep changes nothing durable — the members stay in the
+				// score window and the next tick retries. When a pass hits
+				// the limit, the remainder simply waits for the next tick;
+				// an inner drain loop would blur the interval's meaning.
+				swept, err := sweeper.SweepOnce(ctx)
+				_ = swept // SweepOnce already logs non-zero counts
+				if err != nil && ctx.Err() == nil {
+					log.Error("hold-expiry sweep failed; members stay queued, retrying next tick",
+						slog.String("error", err.Error()))
+				}
+				return nil
+			})
+		},
+	}
+
 	log.Info("worker starting",
 		"service", cfg.ServiceName,
 		"env", string(cfg.Env),
 		"exchange", cfg.Broker.Exchange,
 		"queue", cfg.Broker.Queue,
 		"relay_interval", cfg.Worker.RelayPollInterval.String(),
+		"sweep_interval", cfg.Worker.SweepInterval.String(),
 	)
 
-	runErr := platformworker.Run(ctx, log, relayJob, consumerJob)
+	runErr := platformworker.Run(ctx, log, relayJob, consumerJob, sweeperJob)
 
 	// Flush spans regardless of exit path; a short deadline keeps shutdown
 	// snappy without silently dropping the last traces (cmd/api's pattern).

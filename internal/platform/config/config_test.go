@@ -38,6 +38,8 @@ func setValidEnv(t *testing.T) {
 		"RABBITMQ_PREFETCH":             "10",
 		"WORKER_RELAY_POLL_INTERVAL":    "5s",
 		"WORKER_RELAY_BATCH_SIZE":       "100",
+		"WORKER_SWEEP_INTERVAL":         "30s",
+		"WORKER_SWEEP_BATCH_SIZE":       "500",
 		"PAYMENT_PROVIDER":              "fake",
 		"PAYMENT_FAKE_WEBHOOK_SECRET":   strings.Repeat("w", 32),
 		"PAYMENT_STRIPE_SECRET_KEY":     "",
@@ -87,6 +89,12 @@ func TestLoadValid(t *testing.T) {
 	if cfg.Worker.RelayBatchSize != 100 {
 		t.Errorf("Worker.RelayBatchSize = %d, want 100", cfg.Worker.RelayBatchSize)
 	}
+	if cfg.Worker.SweepInterval != 30*time.Second {
+		t.Errorf("Worker.SweepInterval = %s, want 30s", cfg.Worker.SweepInterval)
+	}
+	if cfg.Worker.SweepBatchSize != 500 {
+		t.Errorf("Worker.SweepBatchSize = %d, want 500", cfg.Worker.SweepBatchSize)
+	}
 	if cfg.Payment.Provider != PaymentProviderFake {
 		t.Errorf("Payment.Provider = %q, want fake", cfg.Payment.Provider)
 	}
@@ -107,6 +115,7 @@ func TestLoadDefaults(t *testing.T) {
 		"MAX_ACTIVE_HOLDS", "POSTGRES_SSLMODE", "PAYMENT_PROVIDER", "OTEL_ENABLED",
 		"RABBITMQ_EXCHANGE", "RABBITMQ_QUEUE", "RABBITMQ_PREFETCH",
 		"WORKER_RELAY_POLL_INTERVAL", "WORKER_RELAY_BATCH_SIZE",
+		"WORKER_SWEEP_INTERVAL", "WORKER_SWEEP_BATCH_SIZE",
 	} {
 		t.Setenv(k, "")
 	}
@@ -141,6 +150,12 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Worker.RelayBatchSize != 100 {
 		t.Errorf("default Worker.RelayBatchSize = %d, want 100", cfg.Worker.RelayBatchSize)
+	}
+	if cfg.Worker.SweepInterval != 30*time.Second {
+		t.Errorf("default Worker.SweepInterval = %s, want 30s", cfg.Worker.SweepInterval)
+	}
+	if cfg.Worker.SweepBatchSize != 500 {
+		t.Errorf("default Worker.SweepBatchSize = %d, want 500", cfg.Worker.SweepBatchSize)
 	}
 	if cfg.Payment.Provider != PaymentProviderFake {
 		t.Errorf("default Payment.Provider = %q, want fake", cfg.Payment.Provider)
@@ -197,6 +212,8 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"prefetch not an int", "RABBITMQ_PREFETCH", "lots", "RABBITMQ_PREFETCH"},
 		{"bad relay interval", "WORKER_RELAY_POLL_INTERVAL", "soon", "WORKER_RELAY_POLL_INTERVAL"},
 		{"relay batch out of range", "WORKER_RELAY_BATCH_SIZE", "0", "WORKER_RELAY_BATCH_SIZE"},
+		{"bad sweep interval", "WORKER_SWEEP_INTERVAL", "every so often", "WORKER_SWEEP_INTERVAL"},
+		{"sweep batch out of range", "WORKER_SWEEP_BATCH_SIZE", "10001", "WORKER_SWEEP_BATCH_SIZE"},
 		{"http addr without port", "HTTP_ADDR", "localhost", "HTTP_ADDR"},
 	}
 	for _, tc := range cases {

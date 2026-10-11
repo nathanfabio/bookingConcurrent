@@ -10,7 +10,8 @@ Two binaries, one hexagonal codebase (`internal/domain` → `application` →
 
 - `cmd/api` — HTTP service: auth, catalog, seat map, holds, payments.
 - `cmd/worker` — background jobs: the transactional-outbox relay, the
-  `BookingConfirmed` consumer, and (from M6 on) the hold-expiry sweeper.
+  `BookingConfirmed` consumer (ADR 0009), and the hold-expiry sweeper
+  (ADR 0010).
 
 ### Running locally
 

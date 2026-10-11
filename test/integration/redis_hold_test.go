@@ -216,12 +216,13 @@ func TestHoldExpiresAndSeatBecomesAvailableAgain(t *testing.T) {
 		t.Fatalf("re-Hold after expiry must succeed: %v", err)
 	}
 
-	// Known residue, reconciled by the hold-expiry sweeper milestone (the
-	// one that introduces cmd/worker): the expired session's ZSET
-	// bookkeeping outlives its keys (Redis expiry is silent). Until then it
-	// is harmless — availability stays correct because seat keys expire on
-	// their own (ADR 0006). Pin the current honest behavior so a future
-	// change is deliberate.
+	// Known residue, reconciled by the hold-expiry sweeper (ADR 0010, lives
+	// in cmd/worker — deliberately NOT invoked by this test): the expired
+	// session's ZSET bookkeeping outlives its keys (Redis expiry is
+	// silent). It is harmless — availability stays correct because seat
+	// keys expire on their own (ADR 0006) — and sweeper_test.go proves the
+	// reclaim. Pin the between-sweeps behavior so a future change is
+	// deliberate.
 	if n := client.ZCard(ctx, "user:alice:holds").Val(); n != 1 {
 		t.Errorf("stale bookkeeping for alice = %d, want 1 until the sweeper runs", n)
 	}

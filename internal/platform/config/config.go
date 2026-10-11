@@ -151,6 +151,13 @@ type Worker struct {
 	RelayPollInterval time.Duration
 	// RelayBatchSize bounds one relay pass (the SQL LIMIT).
 	RelayBatchSize int
+	// SweepInterval is how often the hold-expiry sweeper runs a pass.
+	// 30s default: holds live minutes (REDIS_HOLD_TTL, default 5m), so
+	// half-a-minute granularity on slot reclaim is invisible to users
+	// while keeping the sweep a cheap bounded scan (ADR 0010).
+	SweepInterval time.Duration
+	// SweepBatchSize bounds one sweep pass (the ZSET window size).
+	SweepBatchSize int
 }
 
 // Payment holds payment gateway selection and credentials (CLAUDE.md §7).
@@ -266,6 +273,8 @@ func Load() (*Config, error) {
 	// -- worker ------------------------------------------------------------------------
 	cfg.Worker.RelayPollInterval = duration("WORKER_RELAY_POLL_INTERVAL", 5*time.Second, fail)
 	cfg.Worker.RelayBatchSize = intInRange("WORKER_RELAY_BATCH_SIZE", 100, 1, 10000, fail)
+	cfg.Worker.SweepInterval = duration("WORKER_SWEEP_INTERVAL", 30*time.Second, fail)
+	cfg.Worker.SweepBatchSize = intInRange("WORKER_SWEEP_BATCH_SIZE", 500, 1, 10000, fail)
 
 	// -- payments ---------------------------------------------------------------------
 	cfg.Payment.Provider = PaymentProvider(withDefault("PAYMENT_PROVIDER", string(PaymentProviderFake)))

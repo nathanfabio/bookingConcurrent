@@ -442,5 +442,3 @@ to browse.
   milestone.
 - Stripe test-mode adapter, refunds, and auto-refund of the
   captured-after-expiry window — ADR 0008's explicit deferrals.
-- Hold-expiry sweeper (`cmd/worker`) — deferred; correctness does not
-  depend on it (ADR 0006).
