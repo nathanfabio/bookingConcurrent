@@ -295,6 +295,8 @@ func TestPaymentRepoHasCapturedPayment(t *testing.T) {
 	if got, err := f.repo.HasCapturedPayment(ctx, session); err != nil || !got {
 		t.Errorf("gate after capture = %v (err %v), want true", got, err)
 	}
+	// Historical rows have no deadline. They still appear for manual review.
+	assertReviewState(t, f.pool, p.ID, "unknown_deadline")
 	if got, err := f.repo.HasCapturedPayment(ctx, other); err != nil || got {
 		t.Errorf("gate for an unrelated session = %v (err %v), want false", got, err)
 	}

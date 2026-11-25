@@ -57,6 +57,7 @@ type Payment struct {
 	Currency         string
 	CreatedAt        pgtype.Timestamptz
 	UpdatedAt        pgtype.Timestamptz
+	HoldExpiresAt    pgtype.Timestamptz
 }
 
 type ProcessedEvent struct {
@@ -84,6 +85,18 @@ type Screening struct {
 	SeatsPerRow int32
 	CreatedAt   pgtype.Timestamptz
 	PriceCents  int32
+}
+
+type UnbookedCapture struct {
+	PaymentID        string
+	BookingSessionID string
+	Gateway          string
+	IntentID         string
+	AmountCents      int32
+	Currency         string
+	CapturedAt       pgtype.Timestamptz
+	HoldExpiresAt    pgtype.Timestamptz
+	ReviewState      string
 }
 
 type User struct {

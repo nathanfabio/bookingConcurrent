@@ -71,3 +71,29 @@ grace period accommodates the default HTTP shutdown and telemetry flush
 timeouts. Increase it when raising the HTTP drain timeout. Ordinary
 `down` retains the named Postgres volume. Repeat the startup commands to
 restart.
+
+## Review captured payments without bookings
+
+Apply migration 00011, then query the operational view in the local Compose
+Postgres. It includes the currency and frozen amount for reconciliation.
+
+```bash
+docker compose exec -T postgres sh -c 'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+SELECT payment_id, booking_session_id, intent_id, amount_cents, currency,
+       captured_at, hold_expires_at, review_state
+FROM unbooked_captures
+ORDER BY captured_at, payment_id;
+SQL
+```
+
+| Review state | Operational meaning |
+|---|---|
+| `before_deadline` | Checkout may still complete. Recheck after the recorded deadline. |
+| `deadline_passed` | Check for a committed booking again and investigate the capture using the session and intent IDs. |
+| `unknown_deadline` | A historical writer omitted the deadline. Review individually. |
+
+The report uses database time. A capture arriving after the deadline appears
+as soon as its transaction commits. Re-running the report cannot charge or
+refund anything. In the sandbox, retain the row as evidence. For a future
+real gateway, a verified unbooked capture requires the serialized refund
+procedure in [ADR 0014](adr/0014-capture-reconciliation.md).

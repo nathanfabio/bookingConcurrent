@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -55,6 +56,7 @@ func NewPaymentRepo(pool *pgxpool.Pool) *PaymentRepo {
 func (r *PaymentRepo) InsertIntent(ctx context.Context, p domain.Payment) (domain.Payment, error) {
 	row, err := r.q.InsertPaymentIntent(ctx, sqlcgen.InsertPaymentIntentParams{
 		BookingSessionID: p.BookingSessionID,
+		HoldExpiresAt:    pgtype.Timestamptz{Time: p.HoldExpiresAt, Valid: !p.HoldExpiresAt.IsZero()},
 		Gateway:          p.Gateway,
 		IntentID:         p.IntentID,
 		AmountCents:      int32(p.AmountCents),
@@ -204,6 +206,7 @@ func paymentFromRow(row sqlcgen.Payment) domain.Payment {
 	return domain.Payment{
 		ID:               row.ID,
 		BookingSessionID: row.BookingSessionID,
+		HoldExpiresAt:    ts(row.HoldExpiresAt),
 		Gateway:          row.Gateway,
 		IntentID:         row.IntentID,
 		Status:           domain.Status(row.Status),

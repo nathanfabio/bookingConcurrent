@@ -27,7 +27,8 @@ make test-e2e             # full HTTP journey, with isolated disposable services
 ```
 
 For the containerized API, worker and explicit migration job, see the
-[operations guide](docs/operations.md).
+[operations guide](docs/operations.md). The guide also includes the SQL report
+for reviewing captured payments without a committed booking.
 
 ### Event pipeline (M6, ADR 0009)
 

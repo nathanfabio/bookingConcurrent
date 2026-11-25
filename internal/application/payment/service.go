@@ -100,6 +100,7 @@ func (s *Service) CreateIntent(ctx context.Context, userID, sessionID string) (I
 
 	row, err := s.store.InsertIntent(ctx, domain.Payment{
 		BookingSessionID: sessionID,
+		HoldExpiresAt:    hold.ExpiresAt,
 		Gateway:          s.gateway.Provider(),
 		IntentID:         intent.ID,
 		AmountCents:      screening.PriceCents,

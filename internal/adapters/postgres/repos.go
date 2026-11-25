@@ -137,10 +137,8 @@ func screeningFromRow(row sqlcgen.Screening) domainmovie.Screening {
 	}
 }
 
-// ts unwraps a pgx timestamptz. Schema timestamps are all NOT NULL
-// DEFAULT now(), so an invalid value here means a corrupt row — we return
-// the zero time and let callers treat it as data corruption, not an
-// expected branch.
+// ts unwraps a pgx timestamp. A SQL NULL yields the zero time, used for
+// historical payment intents whose hold deadline was never persisted.
 func ts(t pgtype.Timestamptz) time.Time {
 	return t.Time
 }

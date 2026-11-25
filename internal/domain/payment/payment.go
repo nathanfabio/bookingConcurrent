@@ -152,6 +152,7 @@ const DefaultCurrency = "usd"
 type Payment struct {
 	ID               string
 	BookingSessionID string
+	HoldExpiresAt    time.Time // Zero for historical intents with no recorded deadline.
 	Gateway          string
 	IntentID         string
 	Status           Status

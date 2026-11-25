@@ -11,8 +11,8 @@
 -- idempotent recovery, ADR 0006). 23505 on payments_intent_unique would be
 -- a gateway ID collision — impossible by construction (UUIDs); the repo
 -- logs it loudly rather than guessing.
-INSERT INTO payments (booking_session_id, gateway, intent_id, status, amount_cents, currency)
-VALUES ($1, $2, $3, 'intent', $4, $5)
+INSERT INTO payments (booking_session_id, gateway, intent_id, status, amount_cents, currency, hold_expires_at)
+VALUES ($1, $2, $3, 'intent', $4, $5, $6)
 RETURNING *;
 
 -- name: GetActivePaymentBySession :one

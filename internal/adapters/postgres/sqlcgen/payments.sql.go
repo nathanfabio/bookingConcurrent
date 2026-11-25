@@ -7,13 +7,15 @@ package sqlcgen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const capturePayment = `-- name: CapturePayment :one
 UPDATE payments
 SET status = 'captured', updated_at = now()
 WHERE intent_id = $1 AND status IN ('intent', 'authorized')
-RETURNING id, booking_session_id, gateway, intent_id, status, amount_cents, currency, created_at, updated_at
+RETURNING id, booking_session_id, gateway, intent_id, status, amount_cents, currency, created_at, updated_at, hold_expires_at
 `
 
 // The guarded capture: flips intent/authorized → captured and returns the
@@ -37,6 +39,7 @@ func (q *Queries) CapturePayment(ctx context.Context, intentID string) (Payment,
 		&i.Currency,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HoldExpiresAt,
 	)
 	return i, err
 }
@@ -63,7 +66,7 @@ const failPayment = `-- name: FailPayment :one
 UPDATE payments
 SET status = 'failed', updated_at = now()
 WHERE intent_id = $1 AND status IN ('intent', 'authorized')
-RETURNING id, booking_session_id, gateway, intent_id, status, amount_cents, currency, created_at, updated_at
+RETURNING id, booking_session_id, gateway, intent_id, status, amount_cents, currency, created_at, updated_at, hold_expires_at
 `
 
 // Same guard shape as CapturePayment for the intent/authorized → failed
@@ -84,12 +87,13 @@ func (q *Queries) FailPayment(ctx context.Context, intentID string) (Payment, er
 		&i.Currency,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HoldExpiresAt,
 	)
 	return i, err
 }
 
 const getActivePaymentBySession = `-- name: GetActivePaymentBySession :one
-SELECT id, booking_session_id, gateway, intent_id, status, amount_cents, currency, created_at, updated_at FROM payments
+SELECT id, booking_session_id, gateway, intent_id, status, amount_cents, currency, created_at, updated_at, hold_expires_at FROM payments
 WHERE booking_session_id = $1
   AND status NOT IN ('failed', 'refunded')
 ORDER BY created_at DESC, id DESC
@@ -114,12 +118,13 @@ func (q *Queries) GetActivePaymentBySession(ctx context.Context, bookingSessionI
 		&i.Currency,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HoldExpiresAt,
 	)
 	return i, err
 }
 
 const getPaymentByIntent = `-- name: GetPaymentByIntent :one
-SELECT id, booking_session_id, gateway, intent_id, status, amount_cents, currency, created_at, updated_at FROM payments WHERE intent_id = $1
+SELECT id, booking_session_id, gateway, intent_id, status, amount_cents, currency, created_at, updated_at, hold_expires_at FROM payments WHERE intent_id = $1
 `
 
 // Intent lookup by the gateway's ID (payments_intent_unique). This is the
@@ -137,15 +142,16 @@ func (q *Queries) GetPaymentByIntent(ctx context.Context, intentID string) (Paym
 		&i.Currency,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HoldExpiresAt,
 	)
 	return i, err
 }
 
 const insertPaymentIntent = `-- name: InsertPaymentIntent :one
 
-INSERT INTO payments (booking_session_id, gateway, intent_id, status, amount_cents, currency)
-VALUES ($1, $2, $3, 'intent', $4, $5)
-RETURNING id, booking_session_id, gateway, intent_id, status, amount_cents, currency, created_at, updated_at
+INSERT INTO payments (booking_session_id, gateway, intent_id, status, amount_cents, currency, hold_expires_at)
+VALUES ($1, $2, $3, 'intent', $4, $5, $6)
+RETURNING id, booking_session_id, gateway, intent_id, status, amount_cents, currency, created_at, updated_at, hold_expires_at
 `
 
 type InsertPaymentIntentParams struct {
@@ -154,6 +160,7 @@ type InsertPaymentIntentParams struct {
 	IntentID         string
 	AmountCents      int32
 	Currency         string
+	HoldExpiresAt    pgtype.Timestamptz
 }
 
 // Payments queries (M5, CLAUDE.md §7, ADR 0008). The concurrency design in
@@ -174,6 +181,7 @@ func (q *Queries) InsertPaymentIntent(ctx context.Context, arg InsertPaymentInte
 		arg.IntentID,
 		arg.AmountCents,
 		arg.Currency,
+		arg.HoldExpiresAt,
 	)
 	var i Payment
 	err := row.Scan(
@@ -186,6 +194,7 @@ func (q *Queries) InsertPaymentIntent(ctx context.Context, arg InsertPaymentInte
 		&i.Currency,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HoldExpiresAt,
 	)
 	return i, err
 }

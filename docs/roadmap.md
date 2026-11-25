@@ -35,12 +35,16 @@ integration tests and runs the end-to-end journey separately.
 and migration images, gates startup on schema migration and runs the API
 readiness check. See [the operations guide](operations.md) and ADR 0013.
 
-## Proposed next slices
+**Capture reconciliation**: new payment intents freeze their hold deadline.
+An operational SQL view surfaces captured payments without bookings and
+keeps historical rows visible. ADR 0014 defines ownership, the refund
+decision and retry semantics before introducing a real provider.
 
-1. **Payment and notification reliability:** make captured-but-unbooked
-   payments visible and define compensation before adding real money.
-   Replace claim-before-notify only when introducing a real notifier, using
-   a documented delivery policy and provider idempotency where available.
+## Deferred provider work
+
+Implement the durable refund protocol before introducing real payments.
+Replace claim-before-notify when introducing a real notifier, using a
+documented delivery policy and provider idempotency where available.
 
 Keep the modular monolith, visible SQL, standard-library HTTP and sandbox
 gateway. Add a real payment provider only when it teaches a specific lesson

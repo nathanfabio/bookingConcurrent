@@ -17,6 +17,8 @@ import (
 	domainpayment "github.com/nathanfabio/bookingConcurrent/internal/domain/payment"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // integrationWebhookSecret is a test fixture, not a credential: it only
@@ -104,6 +106,8 @@ func TestBookingLifecycle(t *testing.T) {
 		t.Fatalf("webhook: outcome = %+v, err = %v, want applied", outcome, err)
 	}
 
+	assertReviewState(t, pool, intentRes.Payment.ID, "before_deadline")
+
 	// 5. Confirm: Postgres commits (booking + outbox in ONE transaction),
 	// Redis is cleaned up, the map flips to booked — Postgres-first.
 	res, err := svc.Confirm(ctx, user.ID, hold.SessionID)
@@ -113,6 +117,7 @@ func TestBookingLifecycle(t *testing.T) {
 	if !res.Created || res.Booking.Seat != seatA1 {
 		t.Errorf("confirm result = %+v", res)
 	}
+	assertReviewState(t, pool, intentRes.Payment.ID, "")
 	status = seatStatus(t, svc, ctx, scr.ID, seatA1)
 	if status != domain.SeatStatusBooked {
 		t.Errorf("seat A1 after confirm = %q, want booked", status)
@@ -192,10 +197,11 @@ func TestBookingLifecycleExpiry(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	// Short-TTL service: 1s holds, mirroring the hold-store lifecycle test.
-	shortHolds := redisadapter.NewHoldStore(client, 1*time.Second, 10)
+	// Allow time for intent creation and capture before the real Redis TTL elapses.
+	const ttl = 3 * time.Second
+	shortHolds := redisadapter.NewHoldStore(client, ttl, 10)
 	payments := postgresadapter.NewPaymentRepo(pool)
-	svc := appbooking.NewService(shortHolds, bookings, screenings, payments, 1*time.Second, time.Now)
+	svc := appbooking.NewService(shortHolds, bookings, screenings, payments, ttl, time.Now)
 
 	seat := domain.Seat{Row: "A", Number: 1}
 	hold, err := svc.Hold(ctx, user.ID, scr.ID, seat)
@@ -206,23 +212,28 @@ func TestBookingLifecycleExpiry(t *testing.T) {
 	// Capture the money BEFORE the hold dies: ADR 0006's hard NO must hold
 	// even with real captured funds (ADR 0008) — an expired hold is not
 	// sellable, and the payment row is the audit trail for the refund ops.
-	inserted, err := payments.InsertIntent(ctx, domainpayment.Payment{
-		BookingSessionID: hold.SessionID, Gateway: "fake",
-		IntentID: "pi_fake_" + uuid.NewString(), AmountCents: 1500,
-		Currency: domainpayment.DefaultCurrency,
-	})
+	gw, err := paymentadapter.NewFakeGateway(integrationWebhookSecret)
 	if err != nil {
-		t.Fatalf("insert intent: %v", err)
+		t.Fatal(err)
 	}
+	checkout := apppayment.NewService(gw, payments, shortHolds, screenings, time.Now)
+	intent, err := checkout.CreateIntent(ctx, user.ID, hold.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inserted := intent.Payment
+	assertReviewState(t, pool, inserted.ID, "")
 	if _, capturedNow, err := payments.Capture(ctx, inserted.IntentID); err != nil || !capturedNow {
 		t.Fatalf("capture: capturedNow=%v err=%v", capturedNow, err)
 	}
 
-	time.Sleep(2200 * time.Millisecond) // TTL 1s + scheduler margin
+	time.Sleep(time.Until(hold.ExpiresAt.Add(200 * time.Millisecond)))
 
 	if _, err := svc.Confirm(ctx, user.ID, hold.SessionID); !errors.Is(err, domain.ErrHoldNotFound) && !errors.Is(err, domain.ErrHoldExpired) {
 		t.Errorf("confirm after expiry WITH captured payment: err = %v, want ErrHoldNotFound/ErrHoldExpired", err)
 	}
+
+	assertReviewState(t, pool, inserted.ID, "deadline_passed")
 
 	// The seat is claimable again — expiry alone reconciled it.
 	if _, err := svc.Hold(ctx, user.ID, scr.ID, seat); err != nil {
@@ -243,4 +254,17 @@ func seatStatus(t *testing.T, svc *appbooking.Service, ctx context.Context, scre
 	}
 	t.Fatalf("seat %s%d missing from seat map", seat.Row, seat.Number)
 	return ""
+}
+
+// An empty expected state means the payment should be absent from the report.
+func assertReviewState(t *testing.T, pool *pgxpool.Pool, paymentID, want string) {
+	t.Helper()
+	var state string
+	err := pool.QueryRow(t.Context(), "SELECT review_state FROM unbooked_captures WHERE payment_id = $1", paymentID).Scan(&state)
+	if want == "" && errors.Is(err, pgx.ErrNoRows) {
+		return
+	}
+	if err != nil || state != want {
+		t.Fatalf("payment %s review state = %q, err=%v, want %q", paymentID, state, err, want)
+	}
 }
