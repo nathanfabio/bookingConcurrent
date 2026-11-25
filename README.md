@@ -26,6 +26,9 @@ make test-race            # unit + integration tests, -race (infra optional:
 make test-e2e             # full HTTP journey, with isolated disposable services
 ```
 
+For the containerized API, worker and explicit migration job, see the
+[operations guide](docs/operations.md).
+
 ### Event pipeline (M6, ADR 0009)
 
 A confirmed booking and its event commit in ONE Postgres transaction; the

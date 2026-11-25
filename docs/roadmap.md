@@ -31,12 +31,13 @@ ownership and payment gates, signed capture, confirmation replay, public
 seat state and the worker notification. CI requires reachable services for
 integration tests and runs the end-to-end journey separately.
 
+**Packaging and operations**: an optional Compose overlay builds API, worker
+and migration images, gates startup on schema migration and runs the API
+readiness check. See [the operations guide](operations.md) and ADR 0013.
+
 ## Proposed next slices
 
-1. **Packaging and operations:** multi-stage Dockerfiles for API and worker,
-   optional Compose app services, explicit deployment migrations, and a
-   runbook for startup, readiness, shutdown and failure recovery.
-2. **Payment and notification reliability:** make captured-but-unbooked
+1. **Payment and notification reliability:** make captured-but-unbooked
    payments visible and define compensation before adding real money.
    Replace claim-before-notify only when introducing a real notifier, using
    a documented delivery policy and provider idempotency where available.

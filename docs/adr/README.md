@@ -19,3 +19,4 @@ the history is part of the learning value.
 | 0010 | [Hold-expiry sweeper: composite global index, token-checked Lua teardown](0010-hold-expiry-sweeper.md) | Accepted |
 | 0011 | [HTTP protection: exact CORS origins and bounded local quotas](0011-http-protection.md) | Accepted |
 | 0012 | [Observability: bounded traces, correlated logs, truthful metrics](0012-observability.md) | Accepted |
+| 0013 | [Packaged processes and explicit schema migration](0013-packaged-processes.md) | Accepted |

@@ -1,0 +1,9 @@
+**
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!migrations/
+!migrations/**
+!go.mod
+!go.sum
