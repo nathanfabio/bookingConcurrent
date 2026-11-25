@@ -54,6 +54,7 @@ jobs:
           --health-retries 10
 
     env:
+      REQUIRE_TEST_INFRA: "1"
       REDIS_ADDR: localhost:6379
       POSTGRES_HOST: localhost
       POSTGRES_PORT: "5432"
@@ -107,3 +108,6 @@ jobs:
       # the concurrency core is the point of the project.
       - name: Test with race detector
         run: go test -race ./...
+
+      - name: HTTP booking journey
+        run: make test-e2e

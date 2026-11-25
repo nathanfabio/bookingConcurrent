@@ -11,6 +11,7 @@ version: "2"
 #   a real bug class shows up.
 
 run:
+  build-tags: [e2e]
   timeout: 5m
 
 linters:

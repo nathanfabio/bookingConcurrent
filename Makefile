@@ -86,3 +86,7 @@ run-worker: ## Run the background worker locally (requires .env and `make up`)
 .PHONY: tidy
 tidy: ## go mod tidy
 	go mod tidy
+
+.PHONY: test-e2e
+test-e2e: ## Run the HTTP booking journey with isolated Compose services
+	bash scripts/test-e2e.sh

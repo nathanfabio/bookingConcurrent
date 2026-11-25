@@ -1,0 +1,14 @@
+# Each run supplies a unique project name. Reuse the dev images and health
+# checks, with ephemeral loopback ports and a project-scoped Postgres volume.
+services:
+  postgres:
+    extends: {file: ../../compose.yaml, service: postgres}
+    ports: !override ["127.0.0.1::5432"]
+  redis:
+    extends: {file: ../../compose.yaml, service: redis}
+    ports: !override ["127.0.0.1::6379"]
+  rabbitmq:
+    extends: {file: ../../compose.yaml, service: rabbitmq}
+    ports: !override ["127.0.0.1::5672"]
+volumes:
+  booking_pgdata:

@@ -23,6 +23,7 @@ make run                  # the API on :8080
 make run-worker           # the background worker (separate terminal)
 make test-race            # unit + integration tests, -race (infra optional:
                           # integration tests skip when it is unreachable)
+make test-e2e             # full HTTP journey, with isolated disposable services
 ```
 
 ### Event pipeline (M6, ADR 0009)
@@ -99,3 +100,16 @@ is bounded and best-effort, and Jaeger is not an API readiness dependency.
 The worker emits traces/logs but has no metrics listener in this slice.
 See [ADR 0012](docs/adr/0012-observability.md) for sampling, metric semantics,
 privacy choices and known boundaries.
+
+### End-to-end booking test
+
+Run `make test-e2e` with Bash 4+, Go, Docker Compose 2.24.4+, curl,
+OpenSSL and Python 3. The runner builds the API and worker with the race
+detector, starts a fresh Postgres, Redis and RabbitMQ on loopback ports,
+and uses the development seed catalog. It removes its own containers and
+volume after the run. The journey drives checkout through HTTP and waits
+for the worker's notification log for the confirmed booking ID.
+
+CI runs this journey separately and sets `REQUIRE_TEST_INFRA=1` for the
+integration suite. To require local services too, run
+`REQUIRE_TEST_INFRA=1 make test-race` after `make up`.

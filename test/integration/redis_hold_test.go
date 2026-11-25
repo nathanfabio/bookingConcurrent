@@ -56,7 +56,7 @@ func connectRedis(t *testing.T) *goredis.Client {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
-		t.Skipf("Redis not reachable at %s — start infra with `make up`: %v", addr, err)
+		infraUnavailable(t, "Redis not reachable at %s — start infra with `make up`: %v", addr, err)
 	}
 
 	// Dedicated test DB: safe to wipe.

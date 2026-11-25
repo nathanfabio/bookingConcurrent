@@ -53,7 +53,7 @@ func connectRabbit(t *testing.T) *amqp.Connection {
 
 	conn, err := amqp.Dial(rabbitURL())
 	if err != nil {
-		t.Skipf("RabbitMQ not reachable — start infra with `make up`: %v", err)
+		infraUnavailable(t, "RabbitMQ not reachable — start infra with `make up`: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn

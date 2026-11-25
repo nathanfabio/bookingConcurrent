@@ -54,6 +54,14 @@ func isTestDBChar(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_'
 }
 
+func infraUnavailable(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("REQUIRE_TEST_INFRA") == "1" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -80,7 +88,7 @@ func connectPostgres(t *testing.T) *pgxpool.Pool {
 	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		t.Skipf("Postgres not reachable at %s:%d — start infra with `make up`: %v",
+		infraUnavailable(t, "Postgres not reachable at %s:%d — start infra with `make up`: %v",
 			cfg.Host, cfg.Port, err)
 	}
 

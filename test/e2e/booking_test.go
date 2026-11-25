@@ -1,0 +1,168 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+type seat struct {
+	Row    string
+	Number int
+	Status string
+}
+
+func TestBookingJourney(t *testing.T) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	request := func(method, path, token string, body any, want int, result any) {
+		t.Helper()
+		var data []byte
+		var err error
+		if body != nil {
+			data, err = json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		req, err := http.NewRequestWithContext(t.Context(), method, "http://"+os.Getenv("HTTP_ADDR")+path, bytes.NewReader(data)) //nolint:gosec // Target is the loopback API launched by the test runner.
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if path == "/webhooks/payment" {
+			stamp := time.Now().Unix()
+			mac := hmac.New(sha256.New, []byte(os.Getenv("PAYMENT_FAKE_WEBHOOK_SECRET")))
+			_, _ = fmt.Fprintf(mac, "%d.%s", stamp, data)
+			req.Header.Set("Payment-Signature", fmt.Sprintf("t=%d,v1=%x", stamp, mac.Sum(nil)))
+		}
+		resp, err := client.Do(req) //nolint:gosec // All requests exercise the runner-owned API.
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != want {
+			t.Fatalf("%s %s returned %d, want %d", method, path, resp.StatusCode, want)
+		}
+		if result != nil {
+			if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+				t.Fatalf("%s response: %v", path, err)
+			}
+		}
+	}
+
+	account := func(email string) map[string]string {
+		return map[string]string{"email": email, "password": "sample-e2e-password"}
+	}
+	var owner, other struct {
+		Token string `json:"access_token"`
+	}
+	credentials := account("owner@example.test")
+	request("POST", "/auth/register", "", credentials, 201, nil)
+	request("POST", "/auth/login", "", credentials, 200, &owner)
+	request("POST", "/auth/register", "", account("other@example.test"), 201, &other)
+	if owner.Token == "" || other.Token == "" || owner.Token == other.Token {
+		t.Fatal("expected two distinct access tokens")
+	}
+
+	var catalog struct{ Movies []struct{ ID string } }
+	request("GET", "/movies", "", nil, 200, &catalog)
+	if len(catalog.Movies) == 0 {
+		t.Fatal("empty catalog")
+	}
+	var shows struct{ Screenings []struct{ ID string } }
+	request("GET", "/movies/"+catalog.Movies[0].ID+"/screenings", "", nil, 200, &shows)
+	if len(shows.Screenings) == 0 {
+		t.Fatal("empty screening list")
+	}
+	screening := shows.Screenings[0].ID
+	seats := func() []seat {
+		var grid struct{ Seats []seat }
+		request("GET", "/screenings/"+screening+"/seats", "", nil, 200, &grid)
+		return grid.Seats
+	}
+	var selected seat
+	for _, s := range seats() {
+		if s.Status == "available" {
+			selected = s
+			break
+		}
+	}
+	if selected.Row == "" {
+		t.Fatal("no available seat")
+	}
+	expectSeat := func(status string) {
+		t.Helper()
+		for _, s := range seats() {
+			if s.Row == selected.Row && s.Number == selected.Number && s.Status == status {
+				return
+			}
+		}
+		t.Fatalf("expected %s%d to be %s", selected.Row, selected.Number, status)
+	}
+	var hold struct {
+		Session string `json:"session_id"`
+	}
+	request("POST", "/holds", owner.Token, map[string]any{"screening_id": screening, "row": selected.Row, "number": selected.Number}, 201, &hold)
+	if hold.Session == "" {
+		t.Fatal("missing session_id")
+	}
+	path := "/holds/" + hold.Session
+	expectSeat("held")
+	var rejection struct{ Code string }
+	request("DELETE", path, other.Token, nil, 404, &rejection)
+	if rejection.Code != "not_found" {
+		t.Fatalf("foreign release: %q", rejection.Code)
+	}
+	request("POST", path+"/confirm", owner.Token, nil, 402, &rejection)
+	if rejection.Code != "payment_required" {
+		t.Fatalf("unpaid confirm: %q", rejection.Code)
+	}
+
+	var intent struct {
+		ID     string `json:"intent_id"`
+		Amount int    `json:"amount_cents"`
+	}
+	request("POST", path+"/payment-intent", owner.Token, nil, 201, &intent)
+	request("POST", "/webhooks/payment", "", map[string]any{"kind": "payment.captured", "intent_id": intent.ID, "amount_cents": intent.Amount}, 200, nil)
+	var booking, replay struct {
+		ID, Row, Status string
+		Number          int
+		Session         string `json:"session_id"`
+		Screening       string `json:"screening_id"`
+	}
+	request("POST", path+"/confirm", owner.Token, nil, 201, &booking)
+	request("POST", path+"/confirm", owner.Token, nil, 200, &replay)
+	if booking.ID == "" || booking.Session != hold.Session || booking.Screening != screening || booking.Row != selected.Row || booking.Number != selected.Number || booking.Status != "confirmed" || booking != replay {
+		t.Fatalf("unexpected booking or replay: %+v %+v", booking, replay)
+	}
+	expectSeat("booked")
+
+	// The stub's observable delivery is a worker log entry (ADR 0009).
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
+		log, err := os.ReadFile(os.Getenv("E2E_WORKER_LOG")) //nolint:gosec // Runner supplies its own temporary log path.
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(string(log), "\n") {
+			if strings.Contains(line, "booking confirmation notification (stub)") && strings.Contains(line, booking.ID) {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("worker did not notify for booking %s", booking.ID)
+}

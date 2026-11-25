@@ -25,16 +25,18 @@ with HTTP, durable booking/capture and active-hold signals. Tests cover a
 local OTLP receiver, sampling, export/scrape failures and concurrent counters.
 See ADR 0012 for semantics and the outbox trace-context boundary.
 
+**End-to-end verification**: `make test-e2e` runs a two-user HTTP checkout
+against the API and worker with disposable infrastructure. It verifies the
+ownership and payment gates, signed capture, confirmation replay, public
+seat state and the worker notification. CI requires reachable services for
+integration tests and runs the end-to-end journey separately.
+
 ## Proposed next slices
 
-1. **End-to-end verification:** drive registration, login, hold, sandbox
-   capture, confirmation and replay through HTTP. Require infrastructure in
-   CI so unavailable services fail instead of silently skipping integration
-   tests. Keep optional local integration execution convenient.
-2. **Packaging and operations:** multi-stage Dockerfiles for API and worker,
+1. **Packaging and operations:** multi-stage Dockerfiles for API and worker,
    optional Compose app services, explicit deployment migrations, and a
    runbook for startup, readiness, shutdown and failure recovery.
-3. **Payment and notification reliability:** make captured-but-unbooked
+2. **Payment and notification reliability:** make captured-but-unbooked
    payments visible and define compensation before adding real money.
    Replace claim-before-notify only when introducing a real notifier, using
    a documented delivery policy and provider idempotency where available.
