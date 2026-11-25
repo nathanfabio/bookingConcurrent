@@ -30,6 +30,50 @@ failure.
 | `payment_required` | no captured payment for the session — start (or finish) checkout |
 | `payment_declined` | the gateway refused the capture — a superseding intent can be minted |
 | `webhook_invalid` | provider webhook failed verification — ONE opaque code for every failure mode (ADR 0008) |
+| `cors_rejected` | 403: Origin is not allowed, or preflight method/headers are unsupported |
+| `rate_limited` | 429: per-IP quota exhausted or bounded client table full; retry after Retry-After seconds |
+
+## Browser access and request limits (ADR 0011)
+
+Set `CORS_ALLOWED_ORIGINS` to comma-separated exact origins, for example
+`http://localhost:5173,http://localhost:8080`. No wildcard, trailing slash,
+path or opaque `null`. Empty means any request carrying Origin is rejected
+with 403, including same-origin browser POSTs; list your own API origin too
+when needed. Clients/webhooks without Origin continue normally. Origin is
+browser policy and does not replace authentication.
+
+Allowed browser origins receive credential support. Preflight OPTIONS with
+Origin and Access-Control-Request-Method returns empty 204 for GET, HEAD,
+POST or DELETE and these requested headers: Authorization, Content-Type,
+X-Request-ID, Traceparent, Tracestate. It requires no Bearer token and consumes
+no quota. Responses vary by Origin; preflight also varies by requested method
+and headers. X-Request-ID and Retry-After are exposed to browser JavaScript.
+Cookies retain SameSite=Lax (ADR 0007); enabling CORS does not enable refresh
+cookies on cross-site requests.
+
+Rate limits are continuous token buckets per connection IP and API process:
+
+| Scope | Refill per minute | Maximum burst |
+|-------|-------------------|---------------|
+| General | 120 | 30 |
+| POST /auth/register, /auth/login, /auth/refresh, /auth/logout (shared) | 10 | 5 |
+| POST /holds | 30 | 5 |
+
+Auth/hold requests also consume the general quota. Failed requests count;
+throttling happens before auth or application work. GET/HEAD /healthz and
+/readyz are exempt. Payment routes/webhooks use general quota; successful
+preflight and CORS-denied requests terminate before rate limiting.
+
+Exhaustion returns `429`, `Cache-Control: no-store`, `Retry-After` (positive
+whole seconds), and the JSON error envelope with code `rate_limited`.
+Do not retry before that delay; a delay is an estimate, not a reservation.
+No future tokens are consumed by a denial. Quotas and bursts are configurable
+in `.env.example`. The client table is capped (default 10,000 IPs); when full,
+new IPs receive 429 until an idle entry can be reclaimed (default 10 minutes).
+
+Forwarded/X-Forwarded-For/X-Real-IP headers are ignored. Behind a reverse
+proxy, clients share its connection-IP quota; enforce per-client limits at
+the trusted edge. State resets on restart and each replica has its own limits.
 
 ## Authentication model (ADR 0004, 0005, 0007)
 

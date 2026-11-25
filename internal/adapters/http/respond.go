@@ -20,6 +20,8 @@ const (
 	CodeUnauthorized = "unauthorized"     // M3: auth required / credentials rejected
 	CodeValidation   = "validation_error" // M3: request body failed validation
 	CodeConflict     = "conflict"         // M3: duplicate email on register
+	CodeCORSRejected = "cors_rejected"
+	CodeRateLimited  = "rate_limited"
 
 	// M4 booking codes. They are specific (not the generic CodeConflict)
 	// because clients branch on them: seat_taken may free up when a hold
@@ -85,4 +87,14 @@ func WriteInternalError(w http.ResponseWriter, r *http.Request, recovered any) {
 // response would hand attackers a debugging tool for free (ADR 0004).
 func WriteUnauthorized(w http.ResponseWriter, r *http.Request) {
 	WriteError(w, http.StatusUnauthorized, CodeUnauthorized, "authentication required")
+}
+
+// WriteCORSRejected and WriteRateLimited keep middleware rejections in the
+// same error contract as handler errors, without platform importing adapters.
+func WriteCORSRejected(w http.ResponseWriter, r *http.Request) {
+	WriteError(w, http.StatusForbidden, CodeCORSRejected, "cross-origin request rejected")
+}
+
+func WriteRateLimited(w http.ResponseWriter, r *http.Request) {
+	WriteError(w, http.StatusTooManyRequests, CodeRateLimited, "too many requests; retry later")
 }

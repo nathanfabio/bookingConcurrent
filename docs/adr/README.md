@@ -17,3 +17,4 @@ the history is part of the learning value.
 | 0008 | [Payments: fake sandbox gateway, webhook capture, capture-gated confirm](0008-payments-fake-sandbox-capture-gate.md) | Accepted |
 | 0009 | [Messaging: RabbitMQ, outbox relay semantics, idempotent consumer](0009-messaging-rabbitmq-outbox-relay.md) | Accepted |
 | 0010 | [Hold-expiry sweeper: composite global index, token-checked Lua teardown](0010-hold-expiry-sweeper.md) | Accepted |
+| 0011 | [HTTP protection: exact CORS origins and bounded local quotas](0011-http-protection.md) | Accepted |

@@ -219,10 +219,14 @@ func run() error {
 	mux.Handle("POST /webhooks/payment", httpadapter.PaymentWebhookHandler(paymentService))
 
 	// Middleware chain, applied innermost-first so the OUTER order matches
-	// CLAUDE.md §5: recovery → request ID → logging → handler.
-	// Auth is applied per-route above (M3); tracing, CORS, and rate
-	// limiting join in later milestones.
+	// CLAUDE.md §5: recovery → request ID → logging → CORS → rate limit
+	// → per-route auth → handler. HTTP tracing joins in the next slice.
+	// CORS answers preflight before auth/rate limiting; allowed origins
+	// also receive CORS headers on 401/429/500 responses.
+	limiter := middleware.NewRateLimiter(cfg.RateLimit, time.Now)
 	var handler http.Handler = mux
+	handler = limiter.Wrap(handler, httpadapter.WriteRateLimited)
+	handler = middleware.CORS(cfg.CORS.AllowedOrigins, httpadapter.WriteCORSRejected)(handler)
 	handler = middleware.Logging(handler)
 	handler = middleware.RequestID(handler)
 	handler = middleware.Recovery(httpadapter.WriteInternalError)(handler)

@@ -48,3 +48,17 @@ the process refuses to start half-configured). API contract: `docs/api.md`.
 Decisions and their reasoning: `docs/adr/`.
 
 Continuation plan and reviewable study slices: [docs/roadmap.md](docs/roadmap.md).
+
+### HTTP protection
+
+The API applies CORS before local per-IP rate limiting, then authenticates
+protected routes. Set `CORS_ALLOWED_ORIGINS` in `.env` for browser clients
+(exact origins, no trailing slash). Empty rejects all requests carrying
+Origin; CLI/webhook requests without Origin continue normally.
+
+General, auth and hold token buckets have configurable refill/burst settings
+and a bounded IP table. Throttled requests return JSON `429 rate_limited`
+with `Retry-After`. Limits apply per API process to the connection IP;
+forwarded IP headers are ignored. Behind a proxy, enforce per-client quotas
+at that trusted edge. See [ADR 0011](docs/adr/0011-http-protection.md) for
+the trade-offs and [the API contract](docs/api.md) for defaults.

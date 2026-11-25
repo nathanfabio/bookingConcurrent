@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -58,6 +59,8 @@ type Config struct {
 	ServiceName string
 
 	HTTP      HTTP
+	CORS      CORS
+	RateLimit RateLimit
 	Log       Log
 	Redis     Redis
 	Booking   Booking
@@ -75,6 +78,29 @@ type HTTP struct {
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	ShutdownTimeout time.Duration
+}
+
+// CORS permits exact browser origins. An empty list denies Origin-bearing
+// requests; same-origin browser deployments must list their own origin too.
+type CORS struct {
+	AllowedOrigins []string
+}
+
+// BucketPolicy bounds the initial burst and continuous refill independently.
+// RequestsPerMinute is a refill rate, not a fixed-window request count.
+type BucketPolicy struct {
+	RequestsPerMinute int
+	Burst             int
+}
+
+// RateLimit is local to one API process. IdleTTL must allow every bucket to
+// refill completely before eviction, so eviction cannot reset a depleted quota.
+type RateLimit struct {
+	General    BucketPolicy
+	Auth       BucketPolicy
+	Hold       BucketPolicy
+	MaxClients int
+	IdleTTL    time.Duration
 }
 
 // Log holds logging settings.
@@ -204,6 +230,21 @@ func Load() (*Config, error) {
 	cfg.HTTP.ReadTimeout = duration("HTTP_READ_TIMEOUT", 5*time.Second, fail)
 	cfg.HTTP.WriteTimeout = duration("HTTP_WRITE_TIMEOUT", 10*time.Second, fail)
 	cfg.HTTP.ShutdownTimeout = duration("HTTP_SHUTDOWN_TIMEOUT", 15*time.Second, fail)
+	cfg.CORS.AllowedOrigins = corsOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"), fail)
+	cfg.RateLimit.General = bucketPolicy("RATE_LIMIT_GENERAL", 120, 30, fail)
+	cfg.RateLimit.Auth = bucketPolicy("RATE_LIMIT_AUTH", 10, 5, fail)
+	cfg.RateLimit.Hold = bucketPolicy("RATE_LIMIT_HOLD", 30, 5, fail)
+	cfg.RateLimit.MaxClients = intInRange("RATE_LIMIT_MAX_CLIENTS", 10000, 1, 100000, fail)
+	cfg.RateLimit.IdleTTL = duration("RATE_LIMIT_IDLE_TTL", 10*time.Minute, fail)
+	for _, policy := range []BucketPolicy{cfg.RateLimit.General, cfg.RateLimit.Auth, cfg.RateLimit.Hold} {
+		// Round UP: an entry must never expire before a fully depleted
+		// bucket would naturally refill (including fractional nanoseconds).
+		numerator := time.Minute * time.Duration(policy.Burst)
+		refillTime := (numerator + time.Duration(policy.RequestsPerMinute) - 1) / time.Duration(policy.RequestsPerMinute)
+		if cfg.RateLimit.IdleTTL < refillTime {
+			fail("RATE_LIMIT_IDLE_TTL must allow all bursts to refill (need at least %s)", refillTime)
+		}
+	}
 
 	// -- logging ------------------------------------------------------------------
 	cfg.Log.Level = logLevel("LOG_LEVEL", fail)
@@ -330,6 +371,57 @@ func withDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func bucketPolicy(prefix string, rpm, burst int, fail func(string, ...any)) BucketPolicy {
+	return BucketPolicy{
+		RequestsPerMinute: intInRange(prefix+"_RPM", rpm, 1, 1000000, fail),
+		Burst:             intInRange(prefix+"_BURST", burst, 1, 100000, fail),
+	}
+}
+
+func corsOrigins(raw string, fail func(string, ...any)) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var origins []string
+	seen := make(map[string]bool)
+	for _, value := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(value)
+		u, err := url.Parse(origin)
+		// Serialized origins have no credentials, path (even a trailing /),
+		// query or fragment. Never accept opaque/null or wildcard origins
+		// when allowing browser credentials (ADR 0011).
+		if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") ||
+			u.Hostname() == "" || u.User != nil || origin != u.Scheme+"://"+u.Host ||
+			strings.ContainsAny(origin, "*\\\t\r\n ") {
+			fail("CORS_ALLOWED_ORIGINS: %q must be an exact http(s) origin without path, credentials or wildcard", origin)
+			continue
+		}
+		if strings.HasSuffix(u.Host, ":") {
+			fail("CORS_ALLOWED_ORIGINS: %q has an empty port", origin)
+			continue
+		}
+		if port := u.Port(); port != "" {
+			n, err := strconv.Atoi(port)
+			if err != nil || n < 0 || n > 65535 {
+				fail("CORS_ALLOWED_ORIGINS: %q has an invalid port", origin)
+				continue
+			}
+		}
+		if strings.HasPrefix(u.Host, "[") {
+			ip, err := netip.ParseAddr(u.Hostname())
+			if err != nil || !ip.Is6() || ip.Zone() != "" {
+				fail("CORS_ALLOWED_ORIGINS: %q has an invalid IPv6 host", origin)
+				continue
+			}
+		}
+		if !seen[origin] {
+			origins = append(origins, origin)
+			seen[origin] = true
+		}
+	}
+	return origins
 }
 
 // duration parses a Go duration variable, reporting through fail.

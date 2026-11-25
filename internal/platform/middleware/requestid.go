@@ -1,7 +1,7 @@
 // Package middleware provides the HTTP middleware chain (CLAUDE.md §5).
 //
-// Chain order, outermost first: Recovery → RequestID → Logging → (tracing,
-// CORS, rate limiting in later milestones) → Auth → handler. Order matters:
+// Chain order, outermost first: Recovery → RequestID → Logging → (tracing
+// in the next milestone) → CORS → RateLimit → Auth → handler. Order matters:
 // Recovery must be outermost to catch panics from everything else, and
 // RequestID must run before Logging so every log line can carry the ID.
 //
