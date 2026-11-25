@@ -305,6 +305,27 @@ func TestServiceConfirm(t *testing.T) {
 		}
 	})
 
+	t.Run("committed booking survives cleanup and expiry without Redis or payments", func(t *testing.T) {
+		env := newTestEnv(t, 4)
+		env.seedScreening(screeningID)
+		hold := env.holdA1(t, screeningID)
+		env.seedCapturedPayment(hold.SessionID)
+		first, err := env.svc.Confirm(ctx, alice, hold.SessionID)
+		if err != nil || !first.Created {
+			t.Fatalf("first confirm: %+v, %v", first, err)
+		}
+		env.clock.Advance(testHoldTTL)
+		// Nil dependencies prove replay never touches temporary state.
+		replayService := appbooking.NewService(nil, env.bookings, nil, nil, testHoldTTL, env.clock.Now)
+		replay, err := replayService.Confirm(ctx, alice, hold.SessionID)
+		if err != nil || replay.Created || replay.Booking != first.Booking {
+			t.Fatalf("replay: %+v, %v; want original booking %+v", replay, err, first.Booking)
+		}
+		if _, err := replayService.Confirm(ctx, bob, hold.SessionID); !errors.Is(err, domain.ErrNotHoldOwner) {
+			t.Fatalf("foreign replay: %v; want hidden ownership", err)
+		}
+	})
+
 	t.Run("not the owner", func(t *testing.T) {
 		env := newTestEnv(t, 4)
 		env.seedScreening(screeningID)
@@ -702,8 +723,8 @@ func TestServiceSeatMap(t *testing.T) {
 // from many goroutines — the application-level mirror of the DB arbiter
 // race. Whatever interleaving happens, the store must end with exactly one
 // booking row, at most one caller may see Created=true, and every other
-// outcome is either the idempotent replay (same booking ID) or "hold gone"
-// because the winner's best-effort cleanup already ran. Run with -race.
+// outcome is the idempotent replay (same booking ID), including requests
+// racing the winner's Redis cleanup. Run with -race.
 func TestServiceConcurrentConfirmSameSessionOneCreated(t *testing.T) {
 	const screeningID = "screening-1"
 	const contenders = 32
@@ -734,7 +755,6 @@ func TestServiceConcurrentConfirmSameSessionOneCreated(t *testing.T) {
 
 	created := 0
 	replayed := 0
-	gone := 0
 	// Every successful outcome — created or replayed — must agree on ONE
 	// booking ID, no matter the interleaving.
 	var bookingID string
@@ -744,8 +764,6 @@ func TestServiceConcurrentConfirmSameSessionOneCreated(t *testing.T) {
 			created++
 		case r.err == nil && !r.res.Created:
 			replayed++
-		case errors.Is(r.err, domain.ErrHoldNotFound):
-			gone++
 		default:
 			t.Errorf("goroutine %d unexpected outcome: created=%v err=%v", i, r.res.Created, r.err)
 			continue
@@ -758,11 +776,8 @@ func TestServiceConcurrentConfirmSameSessionOneCreated(t *testing.T) {
 			}
 		}
 	}
-	if created > 1 {
-		t.Errorf("%d goroutines reported Created=true, want at most 1", created)
-	}
-	if created == 0 && replayed == 0 {
-		t.Error("no goroutine confirmed — the booking must exist")
+	if created != 1 || replayed != contenders-1 {
+		t.Errorf("created=%d replayed=%d, want 1 and %d", created, replayed, contenders-1)
 	}
 
 	// Exactly one durable booking, regardless of interleaving.

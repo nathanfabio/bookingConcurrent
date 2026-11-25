@@ -243,11 +243,16 @@ Postgres transaction — booking row + `BookingConfirmed` outbox row
 Response `201` (first confirm) or `200` (idempotent replay — the same
 booking returned again):
 
+Replay reads the committed booking from Postgres and works after the Redis
+hold has been released or expired, including when Redis is unavailable.
+Only the owner can recover it. A first confirmation still requires a live
+hold and captured payment; retrying never creates another booking or event.
+
 ```json
 { "id": "…", "session_id": "…", "screening_id": "…", "row": "A", "number": 1, "status": "confirmed", "confirmed_at": "…" }
 ```
 
-Errors: `404 not_found` (unknown/foreign/expired session — the expiry
+Errors: `404 not_found` (unknown/foreign/expired unconfirmed session — the expiry
 hard-NO fires even with money captured, ADR 0006/0008),
 `402 payment_required` (no captured payment yet),
 `409 seat_booked` (the seat lost a race to another session's booking).

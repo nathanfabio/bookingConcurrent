@@ -314,6 +314,18 @@ func TestConfirmHandler(t *testing.T) {
 			b.Row != "A" || b.Number != 1 || b.Status != "confirmed" {
 			t.Errorf("booking = %+v", b)
 		}
+		replay := httptest.NewRecorder()
+		ConfirmHandler(env.svc).ServeHTTP(replay, pathReq(http.MethodPost, "/holds/"+session+"/confirm", "", aliceID, map[string]string{"sessionID": session}))
+		if replay.Code != http.StatusOK || replay.Body.String() != rec.Body.String() {
+			t.Fatalf("replay after cleanup: %d %s; want 200 and original body", replay.Code, replay.Body.String())
+		}
+		foreign := httptest.NewRecorder()
+		ConfirmHandler(env.svc).ServeHTTP(foreign, pathReq(http.MethodPost, "/holds/"+session+"/confirm", "", bobID, map[string]string{"sessionID": session}))
+		unknown := httptest.NewRecorder()
+		ConfirmHandler(env.svc).ServeHTTP(unknown, pathReq(http.MethodPost, "/holds/unknown/confirm", "", bobID, map[string]string{"sessionID": "unknown"}))
+		if foreign.Code != http.StatusNotFound || foreign.Body.String() != unknown.Body.String() {
+			t.Fatalf("foreign booking must match unknown session: %d %s vs %d %s", foreign.Code, foreign.Body.String(), unknown.Code, unknown.Body.String())
+		}
 	})
 
 	t.Run("idempotent replay returns 200 with the same booking", func(t *testing.T) {

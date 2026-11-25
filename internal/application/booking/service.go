@@ -119,7 +119,28 @@ func (s *Service) Hold(ctx context.Context, userID, screeningID string, seat dom
 // cleanup is best-effort AFTER the commit, because releasing the hold first
 // would strand the buyer if the durable write then failed.
 func (s *Service) Confirm(ctx context.Context, userID, sessionID string) (ConfirmResult, error) {
+	// A committed sale outlives its Redis hold. Recover it BEFORE consulting
+	// Redis or payment state: a retry reads an outcome, it does not sell again.
+	existing, err := s.bookings.GetBySession(ctx, sessionID)
+	if err == nil {
+		if existing.UserID != userID {
+			return ConfirmResult{}, domain.ErrNotHoldOwner
+		}
+		if existing.Status != domain.StatusConfirmed {
+			return ConfirmResult{}, domain.ErrSessionAlreadyConfirmed
+		}
+		return ConfirmResult{Booking: existing, Created: false}, nil
+	}
+	if !errors.Is(err, domain.ErrBookingNotFound) {
+		return ConfirmResult{}, fmt.Errorf("booking: confirm: durable lookup: %w", err)
+	}
+
 	hold, err := s.holds.Get(ctx, sessionID)
+	if errors.Is(err, domain.ErrHoldNotFound) {
+		// Another request may commit and clean up between our durable read
+		// and this Redis read. Re-read Postgres to recover that race too.
+		return s.recoverConflict(ctx, err, userID, sessionID)
+	}
 	if err != nil {
 		return ConfirmResult{}, err // ErrHoldNotFound or infra
 	}
@@ -190,12 +211,7 @@ func (s *Service) recoverConflict(ctx context.Context, conflict error, userID, s
 		return ConfirmResult{}, fmt.Errorf("booking: confirm: conflict recovery: %w", err)
 	}
 	if existing.UserID != userID {
-		// Impossible by construction: session IDs are per-hold random UUIDs
-		// minted for one user, so a foreign row here means something is
-		// deeply wrong. Never leak that to the client — log and 500.
-		slog.ErrorContext(ctx, "confirm conflict recovered a booking owned by another user",
-			slog.String("session_id", sessionID))
-		return ConfirmResult{}, errors.New("booking: confirm: ownership invariant violated")
+		return ConfirmResult{}, domain.ErrNotHoldOwner
 	}
 	if existing.Status == domain.StatusConfirmed {
 		// Idempotent replay: this session already produced a confirmed
@@ -216,8 +232,7 @@ func (s *Service) recoverConflict(ctx context.Context, conflict error, userID, s
 // blocks nothing (the phantom pre-check rejects new holds on booked seats),
 // a session key whose replayed confirms still recover idempotently, and a
 // ZSET bookkeeping entry that costs one hold-limit slot until TTL expiry.
-// Redis's own TTL cleans all of it up; the sweeper milestone will make that
-// deterministic.
+// Redis TTL and the hold-expiry sweeper reconcile that residue.
 func (s *Service) cleanupHold(ctx context.Context, sessionID, userID string) {
 	if err := s.holds.Release(ctx, sessionID, userID); err != nil {
 		slog.WarnContext(ctx, "post-confirm hold cleanup failed; residue reconciles via TTL (ADR 0006)",

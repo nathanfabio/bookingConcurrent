@@ -35,9 +35,9 @@ type BookingStore interface {
 	Confirm(ctx context.Context, b domain.Booking) (domain.Booking, error)
 
 	// GetBySession returns the booking a hold session produced. It is the
-	// recovery half of confirm idempotency (ADR 0006): after a uniqueness
-	// conflict, the use case looks the session up to distinguish "I already
-	// confirmed this" from "someone else won the seat".
+	// recovery half of confirm idempotency (ADR 0006): the use case reads it
+	// before Redis, after a missing hold, and after a uniqueness conflict.
+	// A durable result survives cleanup and expiry of the temporary hold.
 	//
 	// Errors: domain.ErrBookingNotFound when the session never confirmed.
 	GetBySession(ctx context.Context, sessionID string) (domain.Booking, error)

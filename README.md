@@ -46,3 +46,5 @@ POST /holds/{id}/confirm
 Environment reference: `.env.example` (every variable is validated at boot —
 the process refuses to start half-configured). API contract: `docs/api.md`.
 Decisions and their reasoning: `docs/adr/`.
+
+Continuation plan and reviewable study slices: [docs/roadmap.md](docs/roadmap.md).

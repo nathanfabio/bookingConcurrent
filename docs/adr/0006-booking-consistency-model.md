@@ -42,7 +42,19 @@ uses them and how the two stores stay reconciled around them.
    surfaced as a generic failure — never guessed at, and pinned by
    integration tests asserting the literal index names.
 
-3. **Confirm is idempotent per session.** On either conflict sentinel the
+3. **Confirm is idempotent per session.** Read the durable booking before
+   consulting Redis or payment state. An existing confirmed booking owned
+   by the caller returns HTTP 200 even after cleanup, expiry, or Redis
+   unavailability; a foreign booking returns the same 404 as an unknown
+   session. This is recovery of a committed outcome, not a new sale, so it
+   does not bypass the live-hold/payment requirements for a FIRST confirm.
+   A database read failure is an infrastructure error, never a missing row.
+   If Redis reports a missing hold after the initial durable read missed,
+   repeat the durable lookup: another request may have committed and
+   cleaned up in between. This costs one indexed read per first confirm
+   (two for an unknown session), in exchange for retries that survive Redis
+   loss. The unique indexes still arbitrate concurrent inserts.
+   On either conflict sentinel the
    use case looks the session up (`GetBySession`): an existing confirmed
    row owned by the caller is returned as success (HTTP 200 vs 201 on the
    first confirm), not an error. Recovery runs for BOTH sentinels because

@@ -138,11 +138,10 @@ func TestBookingLifecycle(t *testing.T) {
 		t.Errorf("hold on booked seat: err = %v, want ErrSeatAlreadyBooked", err)
 	}
 
-	// 7. Replay of the confirm is idempotent only while the hold survives;
-	// after the cleanup released it, the session is simply unknown — the
-	// same generic 404 the domain promises.
-	if _, err := svc.Confirm(ctx, user.ID, hold.SessionID); !errors.Is(err, domain.ErrHoldNotFound) {
-		t.Errorf("confirm after cleanup: err = %v, want ErrHoldNotFound", err)
+	// 7. Replay reads the durable result even after Redis cleanup.
+	replay, err := svc.Confirm(ctx, user.ID, hold.SessionID)
+	if err != nil || replay.Created || replay.Booking.ID != res.Booking.ID {
+		t.Errorf("confirm after cleanup: %+v, %v; want original booking", replay, err)
 	}
 
 	// 8. Release on a fresh hold frees the seat again.
