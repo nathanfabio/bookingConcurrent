@@ -233,7 +233,7 @@ func TestConfirmedBookingsArbiter(t *testing.T) {
 		t.Fatalf("create bob: %v", err)
 	}
 
-	sessionA := uuid.NewString()
+	sessionA := paidSession(t, pool)
 	bookingA, err := q.InsertConfirmedBooking(ctx, sqlcgen.InsertConfirmedBookingParams{
 		SessionID: sessionA, ScreeningID: scr.ID, SeatRow: "A", SeatNumber: 1, UserID: alice.ID,
 	})
@@ -244,7 +244,7 @@ func TestConfirmedBookingsArbiter(t *testing.T) {
 	// 1. UNIQUE(screening,row,seat) WHERE status='confirmed' — Bob cannot
 	// confirm the same seat; the database says no with a uniqueness error.
 	_, err = q.InsertConfirmedBooking(ctx, sqlcgen.InsertConfirmedBookingParams{
-		SessionID: uuid.NewString(), ScreeningID: scr.ID, SeatRow: "A", SeatNumber: 1, UserID: bob.ID,
+		SessionID: paidSession(t, pool), ScreeningID: scr.ID, SeatRow: "A", SeatNumber: 1, UserID: bob.ID,
 	})
 	if !isUniqueViolation(err) {
 		t.Errorf("second confirmed booking for same seat: err = %v, want unique violation", err)
@@ -282,7 +282,7 @@ func TestConfirmedBookingsArbiter(t *testing.T) {
 		t.Errorf("ExistsConfirmedSeat after cancel = %v, %v; want false", exists, err)
 	}
 	if _, err := q.InsertConfirmedBooking(ctx, sqlcgen.InsertConfirmedBookingParams{
-		SessionID: uuid.NewString(), ScreeningID: scr.ID, SeatRow: "A", SeatNumber: 1, UserID: bob.ID,
+		SessionID: paidSession(t, pool), ScreeningID: scr.ID, SeatRow: "A", SeatNumber: 1, UserID: bob.ID,
 	}); err != nil {
 		t.Errorf("rebooking a cancelled seat must succeed: %v", err)
 	}

@@ -97,7 +97,7 @@ func TestConfirmWritesBookingAndOutboxAtomically(t *testing.T) {
 	f := newBookingFixture(t, 1)
 	ctx := context.Background()
 
-	session := uuid.NewString()
+	session := paidSession(t, f.pool)
 	created, err := f.repo.Confirm(ctx, f.booking(session, f.users[0], "A", 1))
 	if err != nil {
 		t.Fatalf("Confirm: %v", err)
@@ -141,13 +141,13 @@ func TestConfirmConstraintDiscrimination(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(f.pool)
 
-	session := uuid.NewString()
+	session := paidSession(t, f.pool)
 	if _, err := f.repo.Confirm(ctx, f.booking(session, f.users[0], "A", 1)); err != nil {
 		t.Fatalf("first Confirm: %v", err)
 	}
 
 	// Seat conflict: a different session wants the same seat.
-	_, err := f.repo.Confirm(ctx, f.booking(uuid.NewString(), f.users[1], "A", 1))
+	_, err := f.repo.Confirm(ctx, f.booking(paidSession(t, f.pool), f.users[1], "A", 1))
 	if !errors.Is(err, domain.ErrSeatAlreadyBooked) {
 		t.Errorf("seat conflict: err = %v, want ErrSeatAlreadyBooked", err)
 	}
@@ -159,7 +159,7 @@ func TestConfirmConstraintDiscrimination(t *testing.T) {
 
 	// Pin the raw constraint names behind the mapping.
 	_, err = q.InsertConfirmedBooking(ctx, sqlcgen.InsertConfirmedBookingParams{
-		SessionID: uuid.NewString(), ScreeningID: f.screening.ID,
+		SessionID: paidSession(t, f.pool), ScreeningID: f.screening.ID,
 		SeatRow: "A", SeatNumber: 1, UserID: f.users[1],
 	})
 	if name := uniqueConstraintName(err); name != "confirmed_bookings_seat_unique" {
@@ -193,11 +193,12 @@ func TestConcurrentConfirmExactlyOneWinner(t *testing.T) {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := range contenders {
+		session := paidSession(t, f.pool)
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			b, err := f.repo.Confirm(ctx, f.booking(uuid.NewString(), f.users[i], "A", 1))
+			b, err := f.repo.Confirm(ctx, f.booking(session, f.users[i], "A", 1))
 			results[i] = outcome{booking: b, err: err}
 		}(i)
 	}
@@ -244,7 +245,7 @@ func TestBookingRepoReads(t *testing.T) {
 		t.Errorf("unknown session: err = %v, want ErrBookingNotFound", err)
 	}
 
-	session := uuid.NewString()
+	session := paidSession(t, f.pool)
 	created, err := f.repo.Confirm(ctx, f.booking(session, f.users[0], "A", 1))
 	if err != nil {
 		t.Fatalf("Confirm: %v", err)
@@ -263,7 +264,7 @@ func TestBookingRepoReads(t *testing.T) {
 		t.Errorf("SeatConfirmed(free) = %v, %v; want false", ok, err)
 	}
 
-	if _, err := f.repo.Confirm(ctx, f.booking(uuid.NewString(), f.users[1], "B", 3)); err != nil {
+	if _, err := f.repo.Confirm(ctx, f.booking(paidSession(t, f.pool), f.users[1], "B", 3)); err != nil {
 		t.Fatalf("second Confirm: %v", err)
 	}
 	seats, err := f.repo.ConfirmedSeats(ctx, f.screening.ID)
@@ -278,4 +279,16 @@ func uniqueConstraintName(err error) string {
 		return pgErr.ConstraintName
 	}
 	return ""
+}
+
+func paidSession(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	session := uuid.NewString()
+	_, err := pool.Exec(t.Context(), `INSERT INTO payments
+		(booking_session_id, gateway, intent_id, status, amount_cents, currency)
+		VALUES ($1, 'fake', $2, 'captured', 1500, 'usd')`, session, "pi_fake_"+session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session
 }

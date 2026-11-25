@@ -31,9 +31,15 @@ existing booking has its own lifecycle and falls outside this report.
    payment row. Both paths must lock it and recheck state inside their
    transaction. A confirmation that won first ends reconciliation. If a
    refund wins first, mark the payment refunding and prevent confirmation.
-   The existing pre-transaction capture check alone cannot enforce this.
+   Migration 00012 implements this lock in a before-insert trigger, so
+   even API binaries deployed before this migration participate. The trigger
+   acquires the payment lock until the booking and outbox transaction ends.
+   The refund function locks first and then checks the booking in a separate
+   READ COMMITTED statement with a fresh snapshot.
 2. Commit one full-refund request keyed uniquely by payment ID in that
-   transaction. A worker submits the request using a stable provider
+   transaction. Migration 00012 implements the sandbox authorization and
+   persists the full amount, currency and reviewer. In the next slice a
+   worker submits the request using a stable provider
    idempotency key derived from that ID. Duplicate reviews, timeouts,
    process restarts and webhook replays reuse the same request.
 3. Record refunded only after provider confirmation. On an ambiguous

@@ -93,7 +93,39 @@ SQL
 | `unknown_deadline` | A historical writer omitted the deadline. Review individually. |
 
 The report uses database time. A capture arriving after the deadline appears
-as soon as its transaction commits. Re-running the report cannot charge or
-refund anything. In the sandbox, retain the row as evidence. For a future
-real gateway, a verified unbooked capture requires the serialized refund
-procedure in [ADR 0014](adr/0014-capture-reconciliation.md).
+as soon as its transaction commits. Reading the report leaves payment state unchanged.
+
+### Authorize a reviewed sandbox refund
+
+After applying migration 00012, the operations owner can authorize a full
+refund by payment ID. Use the database owner in local Compose. For a shared
+deployment, use an individually attributable operator role and grant the
+required table privileges and function execution explicitly. The function
+runs with the caller's privileges. A shared database login records that
+login as the reviewer.
+
+Open psql and enter the reviewed UUID when prompted:
+
+```bash
+docker compose exec postgres sh -c 'psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+```sql
+\prompt 'Reviewed payment UUID: ' payment_id
+SELECT request_sandbox_refund(:'payment_id'::uuid);
+SELECT * FROM refund_requests WHERE payment_id = :'payment_id'::uuid;
+```
+
+Use autocommit at the default READ COMMITTED isolation. A result of
+`requested` records the amount, currency, database role and time and moves
+the payment to `refunding`. If the connection drops, repeat the same call.
+`already_requested` identifies the existing request. `booking_exists`
+preserves the sale. The other outcomes identify an unknown payment,
+unsupported gateway, missing capture, missing deadline, or future deadline.
+Historical captures with unknown deadlines still require manual investigation.
+
+An authorized request stays pending. The next slice will execute it through
+the sandbox gateway and record completion. For recovery, retain both the
+payment and its request. Rolling back migration 00012 drops the request
+ledger and removes the booking guard; preserve the ledger and resolve any
+pending requests before considering a schema downgrade.

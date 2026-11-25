@@ -159,14 +159,8 @@ func (s *Service) Confirm(ctx context.Context, userID, sessionID string) (Confir
 		return ConfirmResult{}, domain.ErrHoldExpired
 	}
 
-	// The payment gate — this is what ADR 0006's "M5 re-anchors this to
-	// payment capture" meant (ADR 0008): no captured money, no booking.
-	// The read is deliberately OUTSIDE the booking transaction: capture is
-	// monotonic in M5 (nothing un-captures), so the worst race is answering
-	// ErrPaymentNotCaptured a microsecond before the capture lands, and the
-	// client's retry succeeds. Folding the gate into the transaction would
-	// buy nothing here and would have to be re-evaluated the day refunds
-	// (an un-capture) exist.
+	// Fast rejection for unpaid checkout. Postgres verifies the status again
+	// under the payment row lock when inserting the booking (migration 00012).
 	captured, err := s.payments.HasCapturedPayment(ctx, sessionID)
 	if err != nil {
 		return ConfirmResult{}, fmt.Errorf("booking: confirm: payment gate: %w", err)

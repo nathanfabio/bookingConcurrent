@@ -14,7 +14,6 @@ import (
 	appnotification "github.com/nathanfabio/bookingConcurrent/internal/application/notification"
 	appoutbox "github.com/nathanfabio/bookingConcurrent/internal/application/outbox"
 
-	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -52,7 +51,7 @@ func TestRelayPublishesPendingOutboxToBroker(t *testing.T) {
 	resetMessagingTables(t, f.pool)
 	drain := startDrain(t, conn, top.Queue)
 
-	session := uuid.NewString()
+	session := paidSession(t, f.pool)
 	created, err := f.repo.Confirm(ctx, f.booking(session, f.users[0], "A", 2))
 	if err != nil {
 		t.Fatalf("Confirm: %v", err)
@@ -155,7 +154,7 @@ func TestRelayRepublishOnMarkFailureYieldsOneNotification(t *testing.T) {
 	resetMessagingTables(t, f.pool)
 	drain := startDrain(t, conn, top.Queue)
 
-	session := uuid.NewString()
+	session := paidSession(t, f.pool)
 	if _, err := f.repo.Confirm(ctx, f.booking(session, f.users[0], "B", 1)); err != nil {
 		t.Fatalf("Confirm: %v", err)
 	}
@@ -224,7 +223,7 @@ func TestConsumerDeliversToHandlerAndAcks(t *testing.T) {
 	top := testTopology(t, conn)
 	resetMessagingTables(t, f.pool)
 
-	session := uuid.NewString()
+	session := paidSession(t, f.pool)
 	if _, err := f.repo.Confirm(ctx, f.booking(session, f.users[0], "C", 3)); err != nil {
 		t.Fatalf("Confirm: %v", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/nathanfabio/bookingConcurrent/internal/adapters/postgres/sqlcgen"
 	appbooking "github.com/nathanfabio/bookingConcurrent/internal/application/booking"
 	domain "github.com/nathanfabio/bookingConcurrent/internal/domain/booking"
+	domainpayment "github.com/nathanfabio/bookingConcurrent/internal/domain/payment"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -178,7 +179,13 @@ func (r *BookingRepo) ConfirmedSeats(ctx context.Context, screeningID string) ([
 // a sentinel would corrupt the conflict signal.
 func bookingConflictError(ctx context.Context, err error) error {
 	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+	if !errors.As(err, &pgErr) {
+		return nil
+	}
+	if pgErr.Code == "BC001" {
+		return domainpayment.ErrPaymentNotCaptured
+	}
+	if pgErr.Code != "23505" {
 		return nil
 	}
 	switch pgErr.ConstraintName {

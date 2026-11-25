@@ -77,6 +77,14 @@ type RefreshToken struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type RefundRequest struct {
+	PaymentID   string
+	AmountCents int32
+	Currency    string
+	RequestedAt pgtype.Timestamptz
+	RequestedBy string
+}
+
 type Screening struct {
 	ID          string
 	MovieID     string

@@ -16,10 +16,7 @@ import (
 // interfaces — the same two-consumer shape ScreeningRepo already has with
 // booking.ScreeningStore and catalog.ScreeningLister.
 type PaymentFinder interface {
-	// HasCapturedPayment reports whether the money for this hold session
-	// moved. Capture is monotonic in M5 (nothing un-captures), so checking
-	// this OUTSIDE the booking commit transaction is safe in the harmful
-	// direction: the worst race is answering payment_required a microsecond
-	// before the capture lands, and the client's retry succeeds (ADR 0008).
+	// HasCapturedPayment is the preflight check. The durable booking write
+	// independently serializes with refund authorization.
 	HasCapturedPayment(ctx context.Context, sessionID string) (bool, error)
 }

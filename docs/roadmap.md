@@ -40,6 +40,11 @@ An operational SQL view surfaces captured payments without bookings and
 keeps historical rows visible. ADR 0014 defines ownership, the refund
 decision and retry semantics before introducing a real provider.
 
+**Sandbox refund authorization**: after review, a database operation locks
+the captured payment, checks the deadline and booking, and records one
+full-refund request. Confirmation locks the same payment at insert time.
+The worker-side submission and recovery step remains open.
+
 ## Deferred provider work
 
 Implement the durable refund protocol before introducing real payments.
