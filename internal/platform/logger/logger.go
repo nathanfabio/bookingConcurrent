@@ -3,7 +3,7 @@
 // Format is environment-driven: development gets the human-readable text
 // handler; production and test get JSON so log shippers can parse it.
 // Level comes from configuration. Request-path logs gain the request ID
-// through middleware, not through this package.
+// through the correlation handler's context values, set by middleware.
 package logger
 
 import (
@@ -25,7 +25,7 @@ func New(env config.Environment, level slog.Level) *slog.Logger {
 	} else {
 		handler = slog.NewJSONHandler(os.Stderr, opts)
 	}
-	return slog.New(handler)
+	return slog.New(WithCorrelation(handler))
 }
 
 type ctxKey struct{}

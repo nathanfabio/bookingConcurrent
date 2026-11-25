@@ -28,6 +28,30 @@ func newTestHold(sessionID, screeningID, row string, num int, userID, token stri
 	}
 }
 
+func TestActiveHoldCountExcludesExpiredBookkeeping(t *testing.T) {
+	ctx := context.Background()
+	clock := NewManualClock(epoch)
+	store := NewHoldStore(clock, 4)
+	for i, ttl := range []time.Duration{time.Minute, 2 * time.Minute} {
+		hold := newTestHold(fmt.Sprintf("s%d", i), "screening", "A", i+1, "alice", fmt.Sprintf("t%d", i), epoch.Add(ttl))
+		if err := store.Hold(ctx, hold); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count, err := store.CountActiveHolds(ctx, epoch); err != nil || count != 2 {
+		t.Fatalf("active count=%d err=%v, want 2", count, err)
+	}
+	if count, err := store.CountActiveHolds(ctx, epoch.Add(time.Minute)); err != nil || count != 1 {
+		t.Fatalf("count at inclusive expiry=%d err=%v, want 1", count, err)
+	}
+	if len(store.globalHolds) != 2 {
+		t.Error("gauge must filter, not mutate bookkeeping")
+	}
+	if count, err := store.CountActiveHolds(ctx, epoch.Add(2*time.Minute)); err != nil || count != 0 {
+		t.Fatalf("all expired=%d err=%v, want 0", count, err)
+	}
+}
+
 func TestFakeHoldReleaseLifecycle(t *testing.T) {
 	store := NewHoldStore(NewManualClock(epoch), 4)
 	ctx := context.Background()

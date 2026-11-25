@@ -31,6 +31,9 @@ import (
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/logger"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/telemetry"
 	platformworker "github.com/nathanfabio/bookingConcurrent/internal/platform/worker"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 )
 
 func main() {
@@ -67,13 +70,24 @@ func run() error {
 	defer stop()
 
 	shutdownTelemetry, err := telemetry.Setup(ctx, telemetry.Options{
-		Enabled:     cfg.Telemetry.Enabled,
-		ServiceName: cfg.ServiceName,
-		Environment: string(cfg.Env),
+		Enabled:       cfg.Telemetry.Enabled,
+		ServiceName:   cfg.ServiceName,
+		Environment:   string(cfg.Env),
+		Exporter:      cfg.Telemetry.Exporter,
+		Endpoint:      cfg.Telemetry.OTLPEndpoint,
+		SampleRatio:   &cfg.Telemetry.SampleRatio,
+		ExportTimeout: cfg.Telemetry.ExportTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("telemetry setup: %w", err)
 	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(shutdownCtx); err != nil {
+			log.Error("telemetry shutdown", "error", err)
+		}
+	}()
 
 	// --- durable store: FAIL FAST ------------------------------------------------
 	// The relay reads the outbox and the consumer writes processed_events —
@@ -154,16 +168,19 @@ func run() error {
 		Name: "outbox-relay",
 		Run: func(ctx context.Context) error {
 			return platformworker.Tick(ctx, cfg.Worker.RelayPollInterval, func(ctx context.Context) error {
+				ctx, span := otel.Tracer("cmd/worker").Start(ctx, "outbox relay")
+				defer span.End()
 				published, err := relay.RunOnce(ctx)
 				if published > 0 {
-					log.Info("outbox relay published events", slog.Int("count", published))
+					log.InfoContext(ctx, "outbox relay published events", slog.Int("count", published))
 				}
 				if err != nil && ctx.Err() == nil {
+					span.SetStatus(codes.Error, "outbox relay failed")
 					// LOG AND CONTINUE: relay failures are always retryable
 					// (rows stay pending), so this Tick never ends on error.
 					// The ctx check keeps shutdown from logging one last
 					// spurious "failure" when the in-flight publish aborts.
-					log.Error("outbox relay pass failed; rows stay pending, retrying next tick",
+					log.ErrorContext(ctx, "outbox relay pass failed; rows stay pending, retrying next tick",
 						slog.String("error", err.Error()))
 				}
 				return nil
@@ -213,6 +230,8 @@ func run() error {
 		Name: "hold-expiry-sweeper",
 		Run: func(ctx context.Context) error {
 			return platformworker.Tick(ctx, cfg.Worker.SweepInterval, func(ctx context.Context) error {
+				ctx, span := otel.Tracer("cmd/worker").Start(ctx, "holds sweep")
+				defer span.End()
 				// LOG AND CONTINUE, same policy as the relay: a failed
 				// sweep changes nothing durable — the members stay in the
 				// score window and the next tick retries. When a pass hits
@@ -221,7 +240,8 @@ func run() error {
 				swept, err := sweeper.SweepOnce(ctx)
 				_ = swept // SweepOnce already logs non-zero counts
 				if err != nil && ctx.Err() == nil {
-					log.Error("hold-expiry sweep failed; members stay queued, retrying next tick",
+					span.SetStatus(codes.Error, "hold expiry sweep failed")
+					log.ErrorContext(ctx, "hold-expiry sweep failed; members stay queued, retrying next tick",
 						slog.String("error", err.Error()))
 				}
 				return nil
@@ -239,14 +259,6 @@ func run() error {
 	)
 
 	runErr := platformworker.Run(ctx, log, relayJob, consumerJob, sweeperJob)
-
-	// Flush spans regardless of exit path; a short deadline keeps shutdown
-	// snappy without silently dropping the last traces (cmd/api's pattern).
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if tErr := shutdownTelemetry(shutdownCtx); tErr != nil {
-		log.Error("telemetry shutdown", "error", tErr)
-	}
 
 	// platform/worker.Run already normalizes clean cancellation to nil;
 	// anything left is a real failure worth a non-zero exit.

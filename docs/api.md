@@ -2,8 +2,9 @@
 
 Base URL (local dev): `http://localhost:8080`
 
-Every response body is JSON. Field names are `snake_case` everywhere — this
-is enforced by tests (CLAUDE.md §4), not convention.
+Application response bodies are JSON; `/metrics` uses Prometheus text and
+204 responses have no body. JSON field names are `snake_case` — this is
+enforced by tests (CLAUDE.md §4), not convention.
 
 ## Error envelope
 
@@ -60,8 +61,8 @@ Rate limits are continuous token buckets per connection IP and API process:
 | POST /holds | 30 | 5 |
 
 Auth/hold requests also consume the general quota. Failed requests count;
-throttling happens before auth or application work. GET/HEAD /healthz and
-/readyz are exempt. Payment routes/webhooks use general quota; successful
+throttling happens before auth or application work. GET/HEAD /healthz,
+/readyz and /metrics are exempt. Payment routes/webhooks use general quota; successful
 preflight and CORS-denied requests terminate before rate limiting.
 
 Exhaustion returns `429`, `Cache-Control: no-store`, `Retry-After` (positive
@@ -96,6 +97,34 @@ Always `200` if the process is up (does not check dependencies).
 
 `200` when Redis and Postgres are reachable, else `503` with a per-check
 status map.
+
+### `GET /metrics` — Prometheus exposition (ADR 0012)
+
+Public monitoring endpoint (no JWT), with Prometheus text format rather than
+JSON. GET/HEAD scrapes bypass rate limits and HTTP tracing/access logs.
+Deploy behind the intended monitoring network; no credentials are exposed.
+
+Exports `booking_http_requests_total` and
+`booking_http_request_duration_seconds` with method/route-template/status
+labels, plus booking confirmation, durable payment capture, gateway capture
+attempt, Go and process metrics. Requests rejected before routing share
+`route="unmatched"`. Metrics never label by user, session, request or trace ID.
+
+`booking_active_holds` reads future expiry scores from the shared Redis index
+on each scrape. `booking_active_holds_collection_success=0` and an absent
+active gauge indicate Redis read failure, while other metrics remain
+available. This gauge is global across API replicas: do not sum it. Counters
+are per-process, reset on restart, and are not a replacement for durable
+sales/payment records. Scrape concurrency is capped at two.
+
+```bash
+curl -s localhost:8080/metrics
+```
+
+HTTP responses continue returning X-Request-ID. Request/application logs
+also contain trace_id/span_id when tracing provides a valid span context.
+Incoming valid traceparent/tracestate join the caller's trace. HTTP spans
+use route templates and exclude raw paths, query strings and credentials.
 
 ### `POST /auth/register`
 

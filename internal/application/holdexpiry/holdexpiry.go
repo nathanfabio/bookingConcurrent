@@ -68,7 +68,8 @@ func NewSweeper(store ExpiredHoldStore, limit int, now func() time.Time) *Sweepe
 // SweepOnce performs ONE bounded sweep pass and reports how many expired
 // holds were reclaimed. A non-zero count is logged at info level: that is
 // the expired-hold-volume observability ADR 0006 lists as one of the
-// sweeper's reasons to exist (a metric graduates it in M8).
+// sweeper's reasons to exist. The API also exports a scrape-time active-holds
+// gauge from future expiry scores (ADR 0012), not this expired-entry count.
 func (s *Sweeper) SweepOnce(ctx context.Context) (int, error) {
 	swept, err := s.store.SweepExpired(ctx, s.now(), s.limit)
 	if err != nil {

@@ -83,6 +83,13 @@ func sessionKey(sessionID string) string { return sessionPrefix + sessionID }
 
 func userHoldsKey(userID string) string { return userHoldsPrefix + userID + ":holds" }
 
+// CountActiveHolds supplies the scrape-time gauge. ZCARD would include expired
+// bookkeeping waiting for the sweeper; only scores STRICTLY after now count.
+// The second-resolution boundary matches Get/SweepExpired (ADR 0010).
+func (s *HoldStore) CountActiveHolds(ctx context.Context, now time.Time) (int64, error) {
+	return s.client.ZCount(ctx, globalHoldsKey, "("+strconv.FormatInt(now.Unix(), 10), "+inf").Result()
+}
+
 // holdScript claims a seat atomically. It is ONE round trip and ONE atomic
 // unit: limit check, seat claim, session write, and bookkeeping either all
 // apply or none do (see ADR 0002 for why MULTI/pipeline cannot express

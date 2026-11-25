@@ -17,11 +17,16 @@ import (
 // sees it immediately. Connection-level retries happen inside go-redis per
 // command; a boot-time reconnect loop would only hide outages.
 func NewClient(cfg config.Redis) *goredis.Client {
-	return goredis.NewClient(&goredis.Options{
+	client := goredis.NewClient(&goredis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
 		DB:       cfg.DB,
+		// Honor scrape/request deadlines in socket I/O as well as retries;
+		// go-redis otherwise uses its own timeouts with a background context.
+		ContextTimeoutEnabled: true,
 		// PoolSize stays at the default (10 per CPU): holds are one-round-trip
 		// Lua scripts, so the client multiplexes well without tuning.
 	})
+	client.AddHook(tracingHook{})
+	return client
 }

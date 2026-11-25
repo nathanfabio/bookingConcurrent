@@ -67,6 +67,9 @@ jobs:
       RABBITMQ_URL: amqp://ci:ci@localhost:5672/ci
       AUTH_JWT_SECRET: ci-placeholder-not-a-real-secret-000
       PAYMENT_PROVIDER: fake
+      # Production defaults select OTLP; CI uses local in-process exporters
+      # explicitly in telemetry tests and requires no external collector.
+      OTEL_ENABLED: "false"
       # Pinned CI value, not a secret: it only ever signs webhooks the CI
       # test run itself forges against the in-process fake gateway (ADR 0008).
       PAYMENT_FAKE_WEBHOOK_SECRET: ci-fake-webhook-secret-not-real-000

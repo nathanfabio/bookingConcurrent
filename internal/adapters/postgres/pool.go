@@ -26,10 +26,15 @@ func NewPool(ctx context.Context, cfg config.Postgres) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("postgres: parse config: %w", err)
 	}
 
-	// Trace every query through OpenTelemetry. Spans go to the console
-	// exporter until M8 points them at Jaeger; the instrumentation itself
-	// is in place from the day the adapter exists.
-	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer()
+	// Keep timing/parentage without SQL text, parameters or connection
+	// details. Queries can carry passwords/tokens during auth (ADR 0012).
+	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer(
+		otelpgx.WithDisableSQLStatementInAttributes(),
+		otelpgx.WithDisableConnectionDetailsInAttributes(),
+		otelpgx.WithTrimSQLInSpanName(),
+		otelpgx.WithDisableQuerySpanNamePrefix(),
+		otelpgx.WithSpanNameFunc(func(string) string { return "postgres query" }),
+	)
 
 	// Bound how long an acquisition can sit before we call the pool wedged.
 	poolCfg.MaxConnLifetime = time.Hour

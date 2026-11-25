@@ -1,25 +1,24 @@
-// Package telemetry bootstraps OpenTelemetry tracing (CLAUDE.md §8).
-//
-// M0 scope: a console (stdout) span exporter so traces are visible from day
-// one and the middleware chain has a real tracer provider to talk to. M8
-// swaps in the OTLP exporter aimed at Jaeger; the rest of the codebase will
-// not need to change because everything acquires tracers from the global
-// provider set up here.
+// Package telemetry bootstraps OpenTelemetry traces and Prometheus metrics.
 package telemetry
 
 import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // Version is stamped at build time via
@@ -32,29 +31,57 @@ type Options struct {
 	Enabled     bool
 	ServiceName string
 	Environment string
-	// Writer receives spans when Enabled. Defaults to os.Stdout. Tests
-	// inject a buffer; production leaves it nil.
+	// Empty Exporter preserves stdout for callers that inject a Writer.
+	// Binaries pass the validated otlp/stdout selection explicitly.
+	Exporter      string
+	Endpoint      string
+	ExportTimeout time.Duration
+	// Nil means sample all roots; explicit zero disables root sampling.
+	SampleRatio *float64
+	// Writer receives stdout spans only; tests inject an in-memory writer.
 	Writer io.Writer
 }
 
 // Setup installs the global tracer provider and propagators, and returns the
 // shutdown function the caller must defer. When disabled, it installs a
-// no-op shutdown and leaves the SDK's default (no-op) provider in place, so
-// instrumentation code stays call-safe either way.
+// no-op provider. Export is asynchronous and bounded; collector availability
+// is not an API readiness requirement. Callers must shut down on ALL exits,
+// including startup errors, with a fresh uncancelled context (ADR 0012).
 func Setup(ctx context.Context, opts Options) (func(context.Context) error, error) {
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{}, propagation.Baggage{},
+	))
 	if !opts.Enabled {
+		otel.SetTracerProvider(noop.NewTracerProvider())
 		return func(context.Context) error { return nil }, nil
 	}
 
-	w := opts.Writer
-	if w == nil {
-		w = os.Stdout
+	var exporter sdktrace.SpanExporter
+	var err error
+	timeout := opts.ExportTimeout
+	if timeout == 0 {
+		timeout = 3 * time.Second
 	}
-	// PrettyPrint keeps spans readable in dev; M8 replaces the exporter
-	// entirely rather than toggling this.
-	exporter, err := stdouttrace.New(stdouttrace.WithWriter(w), stdouttrace.WithPrettyPrint())
+	switch opts.Exporter {
+	case "", "stdout":
+		w := opts.Writer
+		if w == nil {
+			w = os.Stdout
+		}
+		exporter, err = stdouttrace.New(stdouttrace.WithWriter(w))
+	case "otlp":
+		// The base URL is validated at boot; append the signal path
+		// explicitly so /v1/traces cannot be lost by WithEndpointURL.
+		exporter, err = otlptracehttp.New(ctx,
+			otlptracehttp.WithEndpointURL(strings.TrimRight(opts.Endpoint, "/")+"/v1/traces"),
+			otlptracehttp.WithTimeout(timeout),
+			otlptracehttp.WithRetry(otlptracehttp.RetryConfig{Enabled: false}),
+		)
+	default:
+		return nil, fmt.Errorf("telemetry: unknown exporter %q", opts.Exporter)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("telemetry: create stdout exporter: %w", err)
+		return nil, fmt.Errorf("telemetry: create exporter: %w", err)
 	}
 
 	// Keep the imported semconv version aligned with the one
@@ -71,21 +98,26 @@ func Setup(ctx context.Context, opts Options) (func(context.Context) error, erro
 		attribute.String("deployment.environment.name", opts.Environment),
 	))
 	if err != nil {
+		_ = exporter.Shutdown(ctx)
 		return nil, fmt.Errorf("telemetry: build resource: %w", err)
 	}
 
+	ratio := 1.0
+	if opts.SampleRatio != nil {
+		ratio = *opts.SampleRatio
+	}
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))),
+		sdktrace.WithBatcher(exporter,
+			sdktrace.WithMaxQueueSize(2048),
+			sdktrace.WithExportTimeout(timeout),
+		),
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
-	// TraceContext propagation makes inbound `traceparent` headers join the
-	// caller's trace — the requestID middleware derives its ID from the same
-	// header, so logs and traces stay correlated.
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		slog.Error("telemetry export failed", slog.String("error", err.Error()))
+	}))
 
 	return tp.Shutdown, nil
 }

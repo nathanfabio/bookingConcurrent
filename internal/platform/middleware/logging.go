@@ -1,18 +1,13 @@
 package middleware
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
-)
 
-// skipLoggingPaths are high-frequency, zero-signal probes (liveness/
-// readiness) that would drown request logs without teaching anything.
-// The CLAUDE.md §5 logging requirement targets real traffic.
-var skipLoggingPaths = map[string]bool{
-	"/healthz": true,
-	"/readyz":  true,
-}
+	"go.opentelemetry.io/otel/trace"
+)
 
 // Logging emits one structured log line per request: method, path, status,
 // duration, request ID, and — once the auth middleware has run (M3) — the
@@ -24,7 +19,7 @@ var skipLoggingPaths = map[string]bool{
 // swallow it.
 func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if skipLoggingPaths[r.URL.Path] {
+		if isProbe(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -33,8 +28,15 @@ func Logging(next http.Handler) http.Handler {
 		start := time.Now()
 
 		defer func() {
+			if rec.traceContext != nil {
+				r = r.WithContext(rec.traceContext)
+			}
 			if p := recover(); p != nil {
-				logRequest(r, http.StatusInternalServerError, time.Since(start), rec.userID)
+				status := http.StatusInternalServerError
+				if rec.wroteHeader {
+					status = rec.status() // already on the wire, even if recovery fails
+				}
+				logRequest(r, status, time.Since(start), rec.userID)
 				panic(p) // not ours to handle — Recovery is outside us
 			}
 			logRequest(r, rec.status(), time.Since(start), rec.userID)
@@ -53,6 +55,9 @@ func logRequest(r *http.Request, status int, dur time.Duration, userID string) {
 	}
 	if id := RequestIDFromContext(r.Context()); id != "" {
 		attrs = append(attrs, slog.String("request_id", id))
+	}
+	if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+		attrs = append(attrs, slog.String("trace_id", sc.TraceID().String()), slog.String("span_id", sc.SpanID().String()))
 	}
 	// The authenticated user ID normally arrives via the recorder's side
 	// channel (set by the auth middleware, which runs INSIDE Logging and so
@@ -86,22 +91,36 @@ func logRequest(r *http.Request, status int, dur time.Duration, userID string) {
 // hands the ID over directly. Same package, so the interface stays private.
 type statusRecorder struct {
 	http.ResponseWriter
-	code        int
-	wroteHeader bool
-	userID      string
+	code         int
+	wroteHeader  bool
+	userID       string
+	traceContext context.Context
 }
 
 // setUserID is the side channel the Auth middleware writes through.
 func (r *statusRecorder) setUserID(id string) {
 	r.userID = id
+	if outer, ok := r.ResponseWriter.(interface{ setUserID(string) }); ok {
+		outer.setUserID(id)
+	}
 }
 
+func (r *statusRecorder) setTraceContext(ctx context.Context) { r.traceContext = ctx }
+
+// Unwrap lets http.ResponseController discover capabilities of the original
+// writer (deadlines, flushing, hijacking) through nested instrumentation.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) WriteHeader(code int) {
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		r.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if !r.wroteHeader {
 		r.code = code
 		r.wroteHeader = true
+		r.ResponseWriter.WriteHeader(code)
 	}
-	r.ResponseWriter.WriteHeader(code)
 }
 
 func (r *statusRecorder) Write(b []byte) (int, error) {
@@ -125,6 +144,9 @@ func (r *statusRecorder) status() int {
 
 // Flush implements http.Flusher when the underlying writer supports it.
 func (r *statusRecorder) Flush() {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}

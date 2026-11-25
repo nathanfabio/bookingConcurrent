@@ -19,19 +19,22 @@ with general/auth/hold quotas, structured rejections and deterministic/race
 tests. Proxy headers are deliberately ignored; edge limits are required for
 per-client enforcement behind a proxy. See ADR 0011 and `.env.example`.
 
+**Observability**: HTTP/Redis/Postgres/worker traces, OTLP/HTTP export and
+Jaeger in Compose; correlated slog records; a private Prometheus registry
+with HTTP, durable booking/capture and active-hold signals. Tests cover a
+local OTLP receiver, sampling, export/scrape failures and concurrent counters.
+See ADR 0012 for semantics and the outbox trace-context boundary.
+
 ## Proposed next slices
 
-1. **Observability:** HTTP spans, request-correlated application logs, OTLP
-   export and Jaeger in Compose; Prometheus request and business metrics.
-   Use route templates for labels to avoid unbounded metric cardinality.
-2. **End-to-end verification:** drive registration, login, hold, sandbox
+1. **End-to-end verification:** drive registration, login, hold, sandbox
    capture, confirmation and replay through HTTP. Require infrastructure in
    CI so unavailable services fail instead of silently skipping integration
    tests. Keep optional local integration execution convenient.
-3. **Packaging and operations:** multi-stage Dockerfiles for API and worker,
+2. **Packaging and operations:** multi-stage Dockerfiles for API and worker,
    optional Compose app services, explicit deployment migrations, and a
    runbook for startup, readiness, shutdown and failure recovery.
-4. **Payment and notification reliability:** make captured-but-unbooked
+3. **Payment and notification reliability:** make captured-but-unbooked
    payments visible and define compensation before adding real money.
    Replace claim-before-notify only when introducing a real notifier, using
    a documented delivery policy and provider idempotency where available.

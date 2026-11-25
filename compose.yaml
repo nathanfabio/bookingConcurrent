@@ -47,8 +47,7 @@ services:
     volumes:
       - booking_pgdata:/var/lib/postgresql/data
 
-  # Not consumed by code until M6 (messaging); started from day one so the
-  # stack is stable and the management UI is available at http://localhost:15672
+  # Management UI: http://localhost:15672
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     environment:
@@ -63,6 +62,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # Dev-only all-in-one: in-memory traces, lost when the container restarts.
+  # OTLP/HTTP is the application's exporter protocol; Jaeger is NOT an
+  # API readiness dependency. UI: http://localhost:16686 (ADR 0012).
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.23.0
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:4318:4318"
 
 volumes:
   booking_pgdata:

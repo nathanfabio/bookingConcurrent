@@ -24,7 +24,7 @@ help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: up
-up: ## Start all infra dependencies (Redis, Postgres, RabbitMQ, redis-commander)
+up: ## Start infra (Redis, Postgres, RabbitMQ, Jaeger, redis-commander)
 	docker compose up -d
 
 .PHONY: down

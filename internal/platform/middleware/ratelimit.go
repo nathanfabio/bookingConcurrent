@@ -40,7 +40,7 @@ func NewRateLimiter(policy config.RateLimit, now func() time.Time) *RateLimiter 
 // exempt only for GET/HEAD; successful CORS preflights terminate outside it.
 func (l *RateLimiter) Wrap(next http.Handler, writeRejected func(http.ResponseWriter, *http.Request)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && (r.URL.Path == "/healthz" || r.URL.Path == "/readyz") {
+		if isProbe(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

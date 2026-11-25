@@ -58,7 +58,7 @@ consumes no tokens and reserves no future capacity. Default policy:
 
 | Bucket | Refill per minute | Initial/maximum burst | Scope |
 |--------|-------------------|-----------------------|-------|
-| General | 120 | 30 | All requests except GET/HEAD probes and CORS-terminated requests |
+| General | 120 | 30 | All requests except GET/HEAD probes/scrapes and CORS-terminated requests |
 | Auth | 10 | 5 | POST /auth/register, /auth/login, /auth/refresh, /auth/logout combined |
 | Hold | 30 | 5 | POST /holds |
 
@@ -66,6 +66,7 @@ Failed authentication and invalid hold requests count too, because throttling
 runs before authentication and validation. GET /auth/me and payment routes
 (including webhooks) use the general bucket. GET/HEAD /healthz and /readyz
 bypass allocation and limiting so probe traffic does not alter availability.
+ADR 0012 extends this exemption to GET/HEAD /metrics for reliable scraping.
 
 Return `429 rate_limited`, `Cache-Control: no-store`, and Retry-After in whole
 seconds rounded up. The wait reflects the slowest depleted applicable bucket.

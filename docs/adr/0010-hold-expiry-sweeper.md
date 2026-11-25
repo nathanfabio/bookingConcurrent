@@ -111,8 +111,9 @@ slot-leak-then-reclaim story testable without Redis.
   fairness (hold-limit slots return on the sweep interval instead of
   lingering until... nothing), bounded memory (both ZSETs stay
   proportional to LIVE holds), and the expired-hold count in the worker's
-  logs — which graduates to the active-holds gauge in M8 (`ZCOUNT`/`ZCARD`
-  over the global ZSET, member-format agnostic).
+  logs. ADR 0012 adds a separate active-holds gauge using `ZCOUNT` over
+  FUTURE scores in the global ZSET; `ZCARD` would include expired residue
+  and is not a valid active-holds count.
 - **The deploy seam, honestly:** legacy bare-sessionID members get
   discarded by the anti-clog path, but their `user:{id}:holds` entries are
   unrecoverable — those users lose a hold-limit slot until the entries are

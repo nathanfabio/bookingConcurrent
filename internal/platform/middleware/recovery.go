@@ -38,7 +38,14 @@ func Recovery(writeError func(w http.ResponseWriter, r *http.Request, recovered 
 					slog.String("path", r.URL.Path),
 					slog.String("stack", string(stack[:n])),
 				}
-				if id := RequestIDFromContext(r.Context()); id != "" {
+				id := RequestIDFromContext(r.Context())
+				if id == "" {
+					// Recovery is outside RequestID, so an inner cloned request
+					// cannot update its context. The response header already
+					// contains the sanitized/generated correlation ID.
+					id = w.Header().Get(Header)
+				}
+				if id != "" {
 					attrs = append(attrs, slog.String("request_id", id))
 				}
 				slog.ErrorContext(r.Context(), "panic recovered", attrs...)

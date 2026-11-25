@@ -17,6 +17,7 @@ import (
 	"time"
 
 	httpadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/http"
+	observabilityadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/observability"
 	paymentadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/payment"
 	postgresadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/postgres"
 	redisadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/redis"
@@ -60,13 +61,26 @@ func run() error {
 	defer stop()
 
 	shutdownTelemetry, err := telemetry.Setup(ctx, telemetry.Options{
-		Enabled:     cfg.Telemetry.Enabled,
-		ServiceName: cfg.ServiceName,
-		Environment: string(cfg.Env),
+		Enabled:       cfg.Telemetry.Enabled,
+		ServiceName:   cfg.ServiceName,
+		Environment:   string(cfg.Env),
+		Exporter:      cfg.Telemetry.Exporter,
+		Endpoint:      cfg.Telemetry.OTLPEndpoint,
+		SampleRatio:   &cfg.Telemetry.SampleRatio,
+		ExportTimeout: cfg.Telemetry.ExportTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("telemetry setup: %w", err)
 	}
+	defer func() {
+		// Registered immediately: startup failures must flush/stop the SDK
+		// too. This fresh context outlives cancellation of the server.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(shutdownCtx); err != nil {
+			log.Error("telemetry shutdown", "error", err)
+		}
+	}()
 
 	// --- durable store ---------------------------------------------------------
 	pool, err := postgresadapter.NewPool(ctx, cfg.Postgres)
@@ -111,6 +125,7 @@ func run() error {
 	defer func() { _ = redisClient.Close() }()
 
 	holdStore := redisadapter.NewHoldStore(redisClient, cfg.Redis.HoldTTL, cfg.Booking.MaxActiveHolds)
+	metrics := telemetry.NewMetrics(holdStore.CountActiveHolds, cfg.Telemetry.MetricsRedisTimeout)
 
 	// --- payments (M5) ----------------------------------------------------------
 	// The gateway is selected by validated config. The fake sandbox is the
@@ -132,7 +147,8 @@ func run() error {
 		// drifted apart. Fail closed rather than defaulting to a gateway.
 		return fmt.Errorf("payment provider %q is unknown to the composition root", cfg.Payment.Provider)
 	}
-	paymentRepo := postgresadapter.NewPaymentRepo(pool)
+	gateway = &observabilityadapter.Gateway{PaymentGateway: gateway, Metrics: metrics}
+	paymentRepo := &observabilityadapter.Payments{PaymentStore: postgresadapter.NewPaymentRepo(pool), Metrics: metrics}
 	screeningRepo := postgresadapter.NewScreeningRepo(pool)
 	paymentService := apppayment.NewService(gateway, paymentRepo, holdStore, screeningRepo, time.Now)
 
@@ -146,7 +162,7 @@ func run() error {
 	// one-method PaymentFinder read port.
 	bookingService := appbooking.NewService(
 		holdStore,
-		postgresadapter.NewBookingRepo(pool),
+		&observabilityadapter.Bookings{BookingStore: postgresadapter.NewBookingRepo(pool), Metrics: metrics},
 		screeningRepo,
 		paymentRepo,
 		cfg.Redis.HoldTTL, time.Now,
@@ -158,6 +174,7 @@ func run() error {
 
 	// --- routes ------------------------------------------------------------------
 	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics.Handler())
 	mux.Handle("GET /healthz", httpadapter.HealthzHandler())
 	// Readiness checks the two stores this process cannot live without.
 	// The broker is deliberately NOT here (from M6 onward): the outbox is
@@ -219,14 +236,15 @@ func run() error {
 	mux.Handle("POST /webhooks/payment", httpadapter.PaymentWebhookHandler(paymentService))
 
 	// Middleware chain, applied innermost-first so the OUTER order matches
-	// CLAUDE.md §5: recovery → request ID → logging → CORS → rate limit
-	// → per-route auth → handler. HTTP tracing joins in the next slice.
+	// CLAUDE.md §5: recovery → request ID → logging → observability → CORS
+	// → rate limit → per-route auth → handler.
 	// CORS answers preflight before auth/rate limiting; allowed origins
 	// also receive CORS headers on 401/429/500 responses.
 	limiter := middleware.NewRateLimiter(cfg.RateLimit, time.Now)
 	var handler http.Handler = mux
 	handler = limiter.Wrap(handler, httpadapter.WriteRateLimited)
 	handler = middleware.CORS(cfg.CORS.AllowedOrigins, httpadapter.WriteCORSRejected)(handler)
+	handler = middleware.Observability(metrics)(handler)
 	handler = middleware.Logging(handler)
 	handler = middleware.RequestID(handler)
 	handler = middleware.Recovery(httpadapter.WriteInternalError)(handler)
@@ -243,14 +261,6 @@ func run() error {
 		WriteTimeout:    cfg.HTTP.WriteTimeout,
 		ShutdownTimeout: cfg.HTTP.ShutdownTimeout,
 	})
-
-	// Flush spans regardless of exit path; a short deadline keeps shutdown
-	// snappy without silently dropping the last traces.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if tErr := shutdownTelemetry(shutdownCtx); tErr != nil {
-		log.Error("telemetry shutdown", "error", tErr)
-	}
 
 	return err
 }

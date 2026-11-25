@@ -109,6 +109,10 @@ func TestTraceIDFromTraceparentRejectsMalformed(t *testing.T) {
 		"short trace id":     "00-4bf92f-00f067aa0ba902b7-01",
 		"non-hex trace id":   "00-zbf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 		"bad version length": "0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		"non-hex version":    "zz-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		"zero parent":        "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+		"non-hex parent":     "00-4bf92f3577b34da6a3ce929d0e0e4736-zzf067aa0ba902b7-01",
+		"invalid flags":      "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-zz",
 	}
 	for name, header := range cases {
 		if got := traceIDFromTraceparent(header); got != "" {

@@ -18,3 +18,4 @@ the history is part of the learning value.
 | 0009 | [Messaging: RabbitMQ, outbox relay semantics, idempotent consumer](0009-messaging-rabbitmq-outbox-relay.md) | Accepted |
 | 0010 | [Hold-expiry sweeper: composite global index, token-checked Lua teardown](0010-hold-expiry-sweeper.md) | Accepted |
 | 0011 | [HTTP protection: exact CORS origins and bounded local quotas](0011-http-protection.md) | Accepted |
+| 0012 | [Observability: bounded traces, correlated logs, truthful metrics](0012-observability.md) | Accepted |

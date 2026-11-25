@@ -91,6 +91,20 @@ func GlobalMember(userID, sessionID string) string {
 	return userID + ":" + sessionID
 }
 
+// CountActiveHolds mirrors Redis's future-score gauge, excluding stale
+// bookkeeping without mutating it. Redis scores have second precision.
+func (s *HoldStore) CountActiveHolds(ctx context.Context, now time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int64
+	for _, expires := range s.globalHolds {
+		if expires.Unix() > now.Unix() {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // Hold implements booking.HoldStore.
 func (s *HoldStore) Hold(ctx context.Context, hold domain.Hold) error {
 	s.mu.Lock()

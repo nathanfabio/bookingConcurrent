@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/netip"
 	"net/url"
 	"os"
@@ -196,8 +197,12 @@ type Payment struct {
 
 // Telemetry holds OpenTelemetry settings (CLAUDE.md §8).
 type Telemetry struct {
-	Enabled      bool
-	OTLPEndpoint string
+	Enabled             bool
+	Exporter            string
+	OTLPEndpoint        string
+	SampleRatio         float64
+	ExportTimeout       time.Duration
+	MetricsRedisTimeout time.Duration
 }
 
 // Load reads the environment, validates it, and returns the configuration or
@@ -352,12 +357,45 @@ func Load() (*Config, error) {
 
 	// -- telemetry ---------------------------------------------------------------------
 	cfg.Telemetry.Enabled = boolVar("OTEL_ENABLED", true, fail)
-	cfg.Telemetry.OTLPEndpoint = withDefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
-	if cfg.Telemetry.Enabled {
-		if _, err := url.Parse(cfg.Telemetry.OTLPEndpoint); err != nil {
-			fail("OTEL_EXPORTER_OTLP_ENDPOINT is not a valid URL: %v", err)
+	cfg.Telemetry.Exporter = withDefault("OTEL_TRACES_EXPORTER", "otlp")
+	if cfg.Telemetry.Exporter != "otlp" && cfg.Telemetry.Exporter != "stdout" {
+		fail("OTEL_TRACES_EXPORTER must be otlp or stdout")
+	}
+	cfg.Telemetry.OTLPEndpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if cfg.Telemetry.OTLPEndpoint == "" {
+		if cfg.Telemetry.Enabled && cfg.Telemetry.Exporter == "otlp" {
+			fail("OTEL_EXPORTER_OTLP_ENDPOINT is required when tracing is enabled with OTEL_TRACES_EXPORTER=otlp")
+		}
+	} else {
+		endpoint, err := url.Parse(cfg.Telemetry.OTLPEndpoint)
+		if err != nil || endpoint == nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") ||
+			endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" ||
+			(endpoint.Path != "" && endpoint.Path != "/") {
+			fail("OTEL_EXPORTER_OTLP_ENDPOINT must be an http(s) base URL without credentials, query, fragment or path; OTLP/HTTP appends /v1/traces")
+		} else {
+			base := endpoint.Scheme + "://" + endpoint.Host
+			if (cfg.Telemetry.OTLPEndpoint != base && cfg.Telemetry.OTLPEndpoint != base+"/") || strings.HasSuffix(endpoint.Host, ":") {
+				fail("OTEL_EXPORTER_OTLP_ENDPOINT must be an http(s) base URL without query, fragment or empty port")
+			}
+			if port := endpoint.Port(); port != "" {
+				value, err := strconv.Atoi(port)
+				if err != nil || value < 1 || value > 65535 {
+					fail("OTEL_EXPORTER_OTLP_ENDPOINT port must be between 1 and 65535")
+				}
+			}
 		}
 	}
+	cfg.Telemetry.SampleRatio = 1
+	if raw := os.Getenv("OTEL_TRACE_SAMPLE_RATIO"); raw != "" {
+		ratio, err := strconv.ParseFloat(raw, 64)
+		if err != nil || math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0 || ratio > 1 {
+			fail("OTEL_TRACE_SAMPLE_RATIO must be a finite number between 0 and 1")
+		} else {
+			cfg.Telemetry.SampleRatio = ratio
+		}
+	}
+	cfg.Telemetry.ExportTimeout = duration("OTEL_EXPORT_TIMEOUT", 3*time.Second, fail)
+	cfg.Telemetry.MetricsRedisTimeout = duration("METRICS_REDIS_TIMEOUT", time.Second, fail)
 
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)

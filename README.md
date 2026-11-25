@@ -5,8 +5,8 @@ This software is designed to handle multiple reservations at the same time, ensu
 
 ## It was created for a study and I'm still working on it.
 
-Two binaries, one hexagonal codebase (`internal/domain` → `application` →
-`ports` → `adapters`; see `docs/adr/`):
+Two binaries, one hexagonal codebase: domain/application own the contracts,
+adapters implement them, and `cmd/` wires dependencies (see `docs/adr/`).
 
 - `cmd/api` — HTTP service: auth, catalog, seat map, holds, payments.
 - `cmd/worker` — background jobs: the transactional-outbox relay, the
@@ -17,7 +17,7 @@ Two binaries, one hexagonal codebase (`internal/domain` → `application` →
 
 ```bash
 cp .env.example .env      # then edit (secrets are generated, never committed)
-make up                   # Redis + Postgres + RabbitMQ + UIs via docker compose
+make up                   # Redis + Postgres + RabbitMQ + Jaeger + UIs
 make migrate              # explicit migration (dev also auto-migrates at boot)
 make run                  # the API on :8080
 make run-worker           # the background worker (separate terminal)
@@ -62,3 +62,40 @@ with `Retry-After`. Limits apply per API process to the connection IP;
 forwarded IP headers are ignored. Behind a proxy, enforce per-client quotas
 at that trusted edge. See [ADR 0011](docs/adr/0011-http-protection.md) for
 the trade-offs and [the API contract](docs/api.md) for defaults.
+
+### Observability
+
+`make up` starts Jaeger at [localhost:16686](http://localhost:16686). The API
+and worker export OTLP/HTTP traces by default, with distinct service names.
+An existing `.env` that still has the old port **4317** must change to
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` (the HTTP receiver).
+Set `OTEL_TRACES_EXPORTER=stdout` for newline-delimited JSON spans instead,
+or `OTEL_ENABLED=false` to disable tracing while keeping logs/metrics.
+
+With the API and infrastructure running:
+
+```bash
+curl -s -H 'X-Request-ID: study-trace-1' localhost:8080/movies
+curl -s localhost:8080/metrics
+```
+
+Look for service `booking-api` in Jaeger and `study-trace-1` in the logs.
+HTTP spans contain Redis/Postgres children; worker publish/consume traces
+propagate through RabbitMQ. The HTTP trace ends at the outbox commit:
+trace context is not yet persisted in outbox metadata, so relay ticks start
+separate traces. Request/application logs include request ID and valid
+trace/span IDs; authenticated request logs also carry user ID.
+
+`/metrics` exposes Prometheus request counts/duration, new booking commits,
+durable captures, gateway capture outcomes and active holds. Routes are
+templates, not path IDs. The active-holds gauge reads future Redis expiry
+scores at scrape time; a failed read omits that gauge and exports
+`booking_active_holds_collection_success 0`. It is shared state: do not sum
+it across API replicas. Counters reset on restart and are operational
+signals, not the financial ledger. No Prometheus server is bundled yet.
+
+Jaeger stores dev traces in memory; restarting it loses them. Trace export
+is bounded and best-effort, and Jaeger is not an API readiness dependency.
+The worker emits traces/logs but has no metrics listener in this slice.
+See [ADR 0012](docs/adr/0012-observability.md) for sampling, metric semantics,
+privacy choices and known boundaries.

@@ -54,6 +54,11 @@ func setValidEnv(t *testing.T) {
 		"PAYMENT_STRIPE_SECRET_KEY":     "",
 		"PAYMENT_STRIPE_WEBHOOK_SECRET": "",
 		"OTEL_ENABLED":                  "false",
+		"OTEL_TRACES_EXPORTER":          "otlp",
+		"OTEL_EXPORTER_OTLP_ENDPOINT":   "http://localhost:4318",
+		"OTEL_TRACE_SAMPLE_RATIO":       "1",
+		"OTEL_EXPORT_TIMEOUT":           "3s",
+		"METRICS_REDIS_TIMEOUT":         "1s",
 	}
 	for k, v := range vars {
 		t.Setenv(k, v)

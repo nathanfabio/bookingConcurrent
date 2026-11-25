@@ -169,7 +169,7 @@ func TestRateLimitProbesAndMethodScope(t *testing.T) {
 	l := NewRateLimiter(policy, time.Now)
 	h := rateHandler(l)
 	for _, method := range []string{"GET", "HEAD"} {
-		for _, path := range []string{"/healthz", "/readyz"} {
+		for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
 			if quotaRequest(h, method, path, "192.0.2.1:1").Code != 204 {
 				t.Fatal("probe must bypass limit")
 			}

@@ -1,7 +1,7 @@
 // Package middleware provides the HTTP middleware chain (CLAUDE.md §5).
 //
-// Chain order, outermost first: Recovery → RequestID → Logging → (tracing
-// in the next milestone) → CORS → RateLimit → Auth → handler. Order matters:
+// Chain order, outermost first: Recovery → RequestID → Logging → Observability
+// → CORS → RateLimit → Auth → handler. Order matters:
 // Recovery must be outermost to catch panics from everything else, and
 // RequestID must run before Logging so every log line can carry the ID.
 //
@@ -15,19 +15,16 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
-	"strings"
+
+	"github.com/nathanfabio/bookingConcurrent/internal/platform/logger"
+
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Header is the canonical request ID header, read inbound and written
 // outbound so clients can correlate their own logs with ours.
 const Header = "X-Request-ID"
-
-type ctxKey int
-
-const (
-	requestIDKey ctxKey = iota
-	userIDKey
-)
 
 // RequestID ensures every request has an ID: an acceptable inbound X-Request-ID
 // is propagated, otherwise the trace ID from a valid W3C `traceparent`
@@ -52,25 +49,23 @@ func RequestID(next http.Handler) http.Handler {
 
 // ContextWithRequestID returns a context carrying the request ID.
 func ContextWithRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, requestIDKey, id)
+	return logger.ContextWithRequestID(ctx, id)
 }
 
 // RequestIDFromContext returns the request ID, or "" if none was set.
 func RequestIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(requestIDKey).(string)
-	return id
+	return logger.RequestID(ctx)
 }
 
 // ContextWithUserID returns a context carrying the authenticated user ID.
 // Set by the auth middleware (M3); read by logging and handlers.
 func ContextWithUserID(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, userIDKey, userID)
+	return logger.ContextWithUserID(ctx, userID)
 }
 
 // UserIDFromContext returns the authenticated user ID if present.
 func UserIDFromContext(ctx context.Context) (string, bool) {
-	id, ok := ctx.Value(userIDKey).(string)
-	return id, ok
+	return logger.UserID(ctx)
 }
 
 // sanitizeRequestID accepts client-supplied IDs only when they are safe to
@@ -99,28 +94,14 @@ func sanitizeRequestID(id string) string {
 // header ("version-traceid-parentid-flags") when it is well-formed.
 // Malformed headers yield "" so we never propagate garbage IDs.
 func traceIDFromTraceparent(h string) string {
-	parts := strings.Split(strings.TrimSpace(h), "-")
-	if len(parts) != 4 {
-		return ""
+	// Use the same complete W3C validation as tracing, including parent ID,
+	// version and flags. Partial parsing could correlate logs with a trace
+	// the tracer correctly rejects.
+	ctx := (propagation.TraceContext{}).Extract(context.Background(), propagation.MapCarrier{"traceparent": h})
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		return sc.TraceID().String()
 	}
-	version, traceID := parts[0], parts[1]
-	if len(version) != 2 || version == "ff" {
-		return ""
-	}
-	if len(traceID) != 32 || !isHex(traceID) || traceID == strings.Repeat("0", 32) {
-		return ""
-	}
-	return traceID
-}
-
-func isHex(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return false
-		}
-	}
-	return true
+	return ""
 }
 
 // newUUID returns a random UUIDv4. crypto/rand is used (not math/rand):
