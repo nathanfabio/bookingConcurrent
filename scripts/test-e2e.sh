@@ -87,15 +87,21 @@ wait_for "booked seat visible through HTTP during outage" test -s "$E2E_CHECKOUT
 
 # This project has one checkout. Capture its event identity and reuse it
 # for every subsequent assertion, including the controlled duplicate.
-event_id=$("${psql[@]}" -v booking_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["Booking"]["ID"])' <"$E2E_CHECKOUT")" <<'SQL'
+booking_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["Booking"]["ID"])' <"$E2E_CHECKOUT")
+pending_event() {
+  "${psql[@]}" -v booking_id="$booking_id" <<'SQL'
   SELECT o.event_id FROM outbox o
   JOIN confirmed_bookings b ON b.id::text=o.payload->>'booking_id'
   WHERE b.id=:'booking_id' AND b.status='confirmed' AND o.event_type='BookingConfirmed'
     AND o.published_at IS NULL
     AND NOT EXISTS (SELECT 1 FROM processed_events p WHERE p.event_id=o.event_id);
 SQL
-)
+}
+event_id=$(pending_event)
 [[ "$event_id" =~ ^[0-9a-f-]{36}$ ]] || { echo "expected one pending, unprocessed booking event" >&2; exit 1; }
+# Snapshot the actual pending transaction before reconnecting the source broker.
+pg=( "${compose[@]}" exec -T postgres )
+"${pg[@]}" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc >"$work/pending.dump"
 kill -TERM "$worker_pid"
 wait "$worker_pid"
 worker_pid=
@@ -179,25 +185,30 @@ refund_snapshot() {
 }
 original_refund=$(refund_snapshot)
 [[ -n "$original_refund" ]]
-pg=( "${compose[@]}" exec -T postgres )
 "${pg[@]}" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc >"$work/booking.dump"
 
-kill -TERM "$api_pid" "$worker_pid"
-wait "$api_pid"
-api_pid=
-wait "$worker_pid"
-worker_pid=
+stop_apps() {
+  kill -TERM "$api_pid" "$worker_pid"
+  wait "$api_pid"
+  api_pid=
+  wait "$worker_pid"
+  worker_pid=
+}
 
-# A second database in the disposable cluster shares its existing database role.
-export POSTGRES_DB=booking_restored
-"${pg[@]}" createdb -U "$POSTGRES_USER" -T template0 "$POSTGRES_DB"
-"${pg[@]}" pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --single-transaction <"$work/booking.dump"
-psql=( "${pg[@]}" psql -XAtq -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" )
-export REDIS_DB=1
-[[ $("${redisctl[@]}" -n "$REDIS_DB" DBSIZE) == 0 ]]
-"${rabbitctl[@]}" add_vhost restore
-"${rabbitctl[@]}" set_permissions -p restore booking '.*' '.*' '.*'
-export RABBITMQ_URL="${RABBITMQ_URL%/*}/restore"
+restore_target() {
+  local archive=$1
+  export POSTGRES_DB=$2 REDIS_DB=$3
+  "${pg[@]}" createdb -U "$POSTGRES_USER" -T template0 "$POSTGRES_DB"
+  "${pg[@]}" pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --single-transaction <"$archive"
+  psql=( "${pg[@]}" psql -XAtq -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" )
+  [[ $("${redisctl[@]}" -n "$REDIS_DB" DBSIZE) == 0 ]]
+  "${rabbitctl[@]}" add_vhost "$POSTGRES_DB"
+  "${rabbitctl[@]}" set_permissions -p "$POSTGRES_DB" booking '.*' '.*' '.*'
+  export RABBITMQ_URL="${RABBITMQ_URL%/*}/$POSTGRES_DB"
+}
+
+stop_apps
+restore_target "$work/booking.dump" booking_restored 1
 export ENV=production
 export E2E_WORKER_LOG="$work/restored-worker.log"
 "$work/api" >"$work/restored-api.log" 2>&1 &
@@ -215,3 +226,17 @@ SQL
 [[ "$decision" == already_requested && "$(refund_snapshot)" == "$original_refund" ]]
 [[ $("${psql[@]}" -c 'SELECT count(*) FROM sandbox_refund_receipts') == 1 ]]
 echo "Postgres restore verified: original booking, event and sandbox refund receipt"
+
+# Rewind the same sale to a point before publication. The source was able
+# to deliver later; isolate this timeline from every previous broker vhost.
+stop_apps
+restore_target "$work/pending.dump" booking_pending_restore 2
+[[ "$(pending_event)" == "$event_id" ]] || { echo "archive missing original pending event" >&2; exit 1; }
+export E2E_WORKER_LOG="$work/pending-restore-worker.log"
+start_worker
+wait_for "restored pending event published and claimed" assert_delivery
+notified_restored_booking() {
+  grep -F 'booking confirmation notification (stub)' "$E2E_WORKER_LOG" | grep -F "$booking_id" >/dev/null
+}
+wait_for "restored worker notification for original booking" notified_restored_booking
+echo "Pending outbox restore verified: booking $booking_id, event $event_id"

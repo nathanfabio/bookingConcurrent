@@ -124,4 +124,6 @@ integration suite. To require local services too, run
 
 The E2E runner also restores a Postgres archive into an empty database and
 replays the original booking and completed sandbox refund against the copy.
+A second restore verifies worker delivery from a backup taken while the
+booking event was still pending.
 See the [restore rehearsal and recovery boundary](docs/operations.md#rehearse-a-postgres-restore).

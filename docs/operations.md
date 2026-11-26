@@ -211,7 +211,7 @@ refund completion, the runner saves the original booking identity and refund
 receipt. It runs `pg_dump -Fc` against the live disposable database, creates
 a second database from `template0`, and uses `pg_restore --single-transaction`
 to load the archive. Both commands use the Postgres tools in the service
-container. The temporary archive is removed during cleanup.
+container. The temporary archives are removed during cleanup.
 
 The runner stops the original API and worker and starts fresh binaries in
 production application mode against the restored database. They use an empty
@@ -222,11 +222,25 @@ seat map, and repeats refund authorization with the original payment ID.
 It checks for one sale, the original published and processed event, and one
 sandbox receipt matching the pre-backup reference, amount and currency.
 
+The same drill also saves an earlier archive during the broker outage. At
+that point the sale has committed, its original event has no publication
+timestamp, and the consumer has no claim. The runner restores that archive
+into another empty database, verifies those facts before starting a worker,
+and connects the worker to a fresh broker virtual host. It then checks the
+original event ID for publication and a consumer claim, and the original
+booking ID in the notification log.
+
+An older backup can omit a delivery that happened on the source *after*
+the snapshot. In this drill both timelines deliver the same event. For an
+external notifier, reconcile by event ID with the provider before resuming
+a restored worker, or use a provider that honors that ID as an idempotency
+key across restores.
+
 **Recovery boundary.** The logical archive reflects the database snapshot
 taken by the dump. Later commits require a separate recovery strategy such
 as archived WAL and point-in-time recovery. Transient holds and queued
-RabbitMQ messages live outside Postgres. This drill snapshots an event
-already consumed; a published event still waiting in a lost broker queue
-would require separate reconciliation. The sandbox provider ledger happens
+RabbitMQ messages live outside Postgres. The two snapshots cover events pending publication and events already
+consumed. A published event still waiting in a lost broker queue would
+require separate reconciliation. The sandbox provider ledger happens
 to share this database. With a real provider, reconcile its independent
 receipts and idempotency keys before resuming payment or refund submissions.
