@@ -112,7 +112,9 @@ OpenSSL and Python 3. The runner builds the API and worker with the race
 detector, starts a fresh Postgres, Redis and RabbitMQ on loopback ports,
 and uses the development seed catalog. It removes its own containers and
 volume after the run. The journey drives checkout through HTTP and waits
-for the worker's notification log for the confirmed booking ID.
+for the worker's notification log for the confirmed booking ID. It exercises
+a broker outage, worker restart, relay retry and consumer deduplication.
+See the [diagnostic query and drill](docs/operations.md#diagnose-a-delayed-booking-notification).
 
 CI runs this journey separately and sets `REQUIRE_TEST_INFRA=1` for the
 integration suite. To require local services too, run

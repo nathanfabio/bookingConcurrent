@@ -138,3 +138,40 @@ response was lost. A mismatch in amount, currency, intent or receipt
 requires investigation. Keep the original authorization and receipt intact.
 Rolling back migrations 00012 or 00013 drops audit or idempotency records.
 Preserve those records and reconcile outstanding operations before a downgrade.
+
+## Diagnose a delayed booking notification
+
+Run `make test-e2e` to reproduce the outage locally. The runner stops the
+RabbitMQ application inside a fresh Compose project while the API and
+worker are running. It checks out a seat, restarts the worker while the
+broker is still down and restores the broker after the new relay attempts
+publication. The client reads the booked seat during the outage and repeats
+confirmation after the notification arrives.
+
+To trace a delayed notification in an existing installation, use the booking
+ID returned by the API. Run this read-only query in psql:
+
+```sql
+\prompt 'Booking UUID: ' booking_id
+SELECT b.id, b.status, o.event_id, o.created_at, o.published_at, p.processed_at
+FROM confirmed_bookings b
+LEFT JOIN outbox o ON o.payload->>'booking_id' = b.id::text
+                  AND o.event_type = 'BookingConfirmed'
+LEFT JOIN processed_events p ON p.event_id = o.event_id
+WHERE b.id = :'booking_id'::uuid;
+```
+
+A booking with a pending outbox row has committed. Check the worker relay
+logs and RabbitMQ connectivity. A null publication timestamp means the
+relay has yet to record broker acceptance; the broker may already have
+received the message. If publication is recorded and the claim is absent,
+inspect the queue, its consumers and worker reconnection logs. A claim
+records the consumer's deduplication decision. For the current stub, look
+for the notification log with the same booking ID to verify the side effect.
+
+The drill also clears the publication timestamp for its own disposable event
+to reproduce a relay retry after broker acceptance. It observes two deliveries
+of the same event ID, one consumer claim and one notification. During incident
+recovery, restore connectivity and let the relay process pending rows.
+[ADR 0009](adr/0009-messaging-rabbitmq-outbox-relay.md) describes the
+claim-before-notify crash window.

@@ -145,20 +145,28 @@ func TestBookingJourney(t *testing.T) {
 		Screening       string `json:"screening_id"`
 	}
 	request("POST", path+"/confirm", owner.Token, nil, 201, &booking)
-	request("POST", path+"/confirm", owner.Token, nil, 200, &replay)
-	if booking.ID == "" || booking.Session != hold.Session || booking.Screening != screening || booking.Row != selected.Row || booking.Number != selected.Number || booking.Status != "confirmed" || booking != replay {
-		t.Fatalf("unexpected booking or replay: %+v %+v", booking, replay)
+	if booking.ID == "" || booking.Session != hold.Session || booking.Screening != screening || booking.Row != selected.Row || booking.Number != selected.Number || booking.Status != "confirmed" {
+		t.Fatalf("unexpected booking: %+v", booking)
 	}
 	expectSeat("booked")
+	// Tell the runner which sale the API exposed while RabbitMQ was offline.
+	if err := os.WriteFile(os.Getenv("E2E_CONFIRMED_ID"), []byte(booking.ID), 0600); err != nil { //nolint:gosec // Runner-owned temporary fixture.
+		t.Fatal(err)
+	}
 
-	// The stub's observable delivery is a worker log entry (ADR 0009).
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
+	// The runner restarts the worker and restores RabbitMQ while we wait.
+	// Replay with the original owner only after this booking is delivered.
+	for deadline := time.Now().Add(90 * time.Second); time.Now().Before(deadline); {
 		log, err := os.ReadFile(os.Getenv("E2E_WORKER_LOG")) //nolint:gosec // Runner supplies its own temporary log path.
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, line := range strings.Split(string(log), "\n") {
 			if strings.Contains(line, "booking confirmation notification (stub)") && strings.Contains(line, booking.ID) {
+				request("POST", path+"/confirm", owner.Token, nil, 200, &replay)
+				if replay != booking {
+					t.Fatalf("replay after recovery = %+v, want %+v", replay, booking)
+				}
 				return
 			}
 		}
