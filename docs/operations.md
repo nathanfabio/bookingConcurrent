@@ -203,3 +203,30 @@ the runner moves the Redis TCP listener off the mapped port and closes
 existing client connections, then restores the listener. Redis data
 survives the drill. The final database check verifies that confirmation
 replay produced no extra booking or outbox event.
+
+## Rehearse a Postgres restore
+
+Run `make test-e2e` from the repository root. After checkout and sandbox
+refund completion, the runner saves the original booking identity and refund
+receipt. It runs `pg_dump -Fc` against the live disposable database, creates
+a second database from `template0`, and uses `pg_restore --single-transaction`
+to load the archive. Both commands use the Postgres tools in the service
+container. The temporary archive is removed during cleanup.
+
+The runner stops the original API and worker and starts fresh binaries in
+production application mode against the restored database. They use an empty
+Redis logical database and a newly created RabbitMQ virtual host. The database
+role and application secrets are supplied by the test environment. The test
+logs in again, repeats confirmation with the original session ID, reads the
+seat map, and repeats refund authorization with the original payment ID.
+It checks for one sale, the original published and processed event, and one
+sandbox receipt matching the pre-backup reference, amount and currency.
+
+**Recovery boundary.** The logical archive reflects the database snapshot
+taken by the dump. Later commits require a separate recovery strategy such
+as archived WAL and point-in-time recovery. Transient holds and queued
+RabbitMQ messages live outside Postgres. This drill snapshots an event
+already consumed; a published event still waiting in a lost broker queue
+would require separate reconciliation. The sandbox provider ledger happens
+to share this database. With a real provider, reconcile its independent
+receipts and idempotency keys before resuming payment or refund submissions.

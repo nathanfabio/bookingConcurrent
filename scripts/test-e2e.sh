@@ -165,8 +165,53 @@ for ((i=0; i<50; i++)); do
     JOIN refund_requests r ON r.payment_id=p.id
     JOIN sandbox_refund_receipts s ON s.idempotency_key=p.id AND s.reference=r.provider_reference
     WHERE p.intent_id='pi_fake_refund_e2e' AND p.status='refunded' AND r.completed_at IS NOT NULL")
-  if [[ "$done_count" == 1 ]]; then exit 0; fi
+  if [[ "$done_count" == 1 ]]; then break; fi
   sleep 0.2
 done
-echo "worker did not complete the authorized sandbox refund" >&2
-exit 1
+[[ "$done_count" == 1 ]] || { echo "worker did not complete the authorized sandbox refund" >&2; exit 1; }
+
+refund_snapshot() {
+  "${psql[@]}" -c "
+    SELECT p.id, p.intent_id, s.reference, r.amount_cents, r.currency, r.completed_at
+    FROM payments p JOIN refund_requests r ON r.payment_id=p.id
+    JOIN sandbox_refund_receipts s ON s.idempotency_key=p.id AND s.reference=r.provider_reference
+    WHERE p.intent_id='pi_fake_refund_e2e' AND p.status='refunded' AND r.completed_at IS NOT NULL"
+}
+original_refund=$(refund_snapshot)
+[[ -n "$original_refund" ]]
+pg=( "${compose[@]}" exec -T postgres )
+"${pg[@]}" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc >"$work/booking.dump"
+
+kill -TERM "$api_pid" "$worker_pid"
+wait "$api_pid"
+api_pid=
+wait "$worker_pid"
+worker_pid=
+
+# A second database in the disposable cluster shares its existing database role.
+export POSTGRES_DB=booking_restored
+"${pg[@]}" createdb -U "$POSTGRES_USER" -T template0 "$POSTGRES_DB"
+"${pg[@]}" pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --single-transaction <"$work/booking.dump"
+psql=( "${pg[@]}" psql -XAtq -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" )
+export REDIS_DB=1
+[[ $("${redisctl[@]}" -n "$REDIS_DB" DBSIZE) == 0 ]]
+"${rabbitctl[@]}" add_vhost restore
+"${rabbitctl[@]}" set_permissions -p restore booking '.*' '.*' '.*'
+export RABBITMQ_URL="${RABBITMQ_URL%/*}/restore"
+export ENV=production
+export E2E_WORKER_LOG="$work/restored-worker.log"
+"$work/api" >"$work/restored-api.log" 2>&1 &
+api_pid=$!
+start_worker
+wait_for "restored API readiness" curl -fsS --max-time 3 "http://$HTTP_ADDR/readyz"
+wait_for "restored worker subscription" grep -q 'consumer subscribed' "$E2E_WORKER_LOG"
+"$work/journey" -test.run='^TestRestoredBooking$' -test.timeout=30s
+assert_delivery
+original_payment_id=${original_refund%%|*}
+decision=$("${psql[@]}" -v payment_id="$original_payment_id" <<'SQL'
+SELECT request_sandbox_refund(:'payment_id');
+SQL
+)
+[[ "$decision" == already_requested && "$(refund_snapshot)" == "$original_refund" ]]
+[[ $("${psql[@]}" -c 'SELECT count(*) FROM sandbox_refund_receipts') == 1 ]]
+echo "Postgres restore verified: original booking, event and sandbox refund receipt"

@@ -121,3 +121,7 @@ See the [diagnostic query and drill](docs/operations.md#diagnose-a-delayed-booki
 CI runs this journey separately and sets `REQUIRE_TEST_INFRA=1` for the
 integration suite. To require local services too, run
 `REQUIRE_TEST_INFRA=1 make test-race` after `make up`.
+
+The E2E runner also restores a Postgres archive into an empty database and
+replays the original booking and completed sandbox refund against the copy.
+See the [restore rehearsal and recovery boundary](docs/operations.md#rehearse-a-postgres-restore).
