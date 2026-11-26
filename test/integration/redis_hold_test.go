@@ -23,6 +23,7 @@ import (
 	"time"
 
 	redisadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/redis"
+	appbooking "github.com/nathanfabio/bookingConcurrent/internal/application/booking"
 	domain "github.com/nathanfabio/bookingConcurrent/internal/domain/booking"
 
 	"github.com/google/uuid"
@@ -409,5 +410,82 @@ func TestHoldLimitEnforcedAtomically(t *testing.T) {
 
 	if success != limit {
 		t.Errorf("burst of %d with limit %d: %d succeeded, want exactly %d (limit must be atomic)", burst, limit, success, limit)
+	}
+}
+
+// Multiple HTTP attempts mint different candidate sessions. The script must
+// return the winner to every caller even when the user's quota is already full.
+func TestConcurrentKeyedHoldReplay(t *testing.T) {
+	client := connectRedis(t)
+	store := newStore(client, 1)
+	ctx := t.Context()
+	key := appbooking.HoldKey{Value: uuid.Must(uuid.NewV7()).String(), CreateBefore: time.Now().Add(24 * time.Hour)}
+	start := make(chan struct{})
+	results := make([]domain.Hold, 32)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Go(func() {
+			candidate := newHold("screen", "A", 1, "owner", testHoldTTL)
+			<-start
+			got, err := store.Claim(ctx, candidate, key)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			results[i] = got
+		})
+	}
+	close(start)
+	wg.Wait()
+	winner := results[0]
+	for _, got := range results {
+		if got.SessionID != winner.SessionID || got.HoldToken != winner.HoldToken || !got.ExpiresAt.Equal(winner.ExpiresAt) {
+			t.Fatalf("inconsistent replay: %+v vs %+v", got, winner)
+		}
+	}
+	if n, err := client.ZCard(ctx, "user:owner:holds").Result(); err != nil || n != 1 {
+		t.Fatalf("active holds=%d, err=%v", n, err)
+	}
+	otherSeat := newHold("screen", "A", 2, "owner", testHoldTTL)
+	if _, err := store.Claim(ctx, otherSeat, key); !errors.Is(err, domain.ErrHoldKeyConflict) {
+		t.Fatalf("changed target: %v", err)
+	}
+	otherSeat.UserID = "other"
+	if _, err := store.Claim(ctx, otherSeat, key); err != nil {
+		t.Fatalf("independent owner: %v", err)
+	}
+	if err := store.Release(ctx, winner.SessionID, winner.UserID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(ctx, winner, key); !errors.Is(err, domain.ErrHoldKeyClosed) {
+		t.Fatalf("released replay: %v", err)
+	}
+}
+
+func TestRedisOldHoldKeyOnlyRecoversLiveClaim(t *testing.T) {
+	client := connectRedis(t)
+	store := newStore(client, 1)
+	ctx := t.Context()
+	candidate := newHold("screen", "A", 1, "buyer", testHoldTTL)
+	key := appbooking.HoldKey{Value: uuid.Must(uuid.NewV7()).String(), CreateBefore: time.Now().Add(time.Hour)}
+	first, err := store.Claim(ctx, candidate, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Move the creation cutoff behind Redis's clock. A retained record may
+	// still replay; after its disappearance this cutoff must prevent creation.
+	key.CreateBefore = time.Now().Add(-time.Hour)
+	got, err := store.Claim(ctx, candidate, key)
+	if err != nil || got.SessionID != first.SessionID {
+		t.Fatalf("live replay after cutoff = %+v, %v", got, err)
+	}
+	if err := store.Release(ctx, first.SessionID, first.UserID); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Del(ctx, "hold-request:"+candidate.UserID+":"+key.Value).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Claim(ctx, candidate, key); !errors.Is(err, domain.ErrHoldKeyClosed) {
+		t.Fatalf("missing stale binding: %v", err)
 	}
 }

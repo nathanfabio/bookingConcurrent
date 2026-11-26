@@ -101,10 +101,28 @@ func (s *HoldStore) CountActiveHolds(ctx context.Context, now time.Time) (int64,
 // ARGV[4] max holds       ARGV[5] session ID       ARGV[6] screening ID
 // ARGV[7] row             ARGV[8] seat number      ARGV[9] user ID
 //
-// Returns: "OK" | "LIMIT" | "TAKEN"
+// Optional KEYS[5] is the per-user request binding. ARGV[10..12] carry
+// the original deadline, binding retention in seconds and last permitted
+// creation time in Unix milliseconds. The reply is an array with a status
+// and, on REPLAY, the original session, token and deadline.
 const holdScript = `
+if KEYS[5] then
+  local saved = redis.call('HMGET', KEYS[5], 'seat', 'session', 'token', 'deadline')
+  if saved[1] then
+    if saved[1] ~= KEYS[1] then return {'CONFLICT'} end
+    local sessionKey = 'session:' .. saved[2]
+    local expiry = redis.call('HGET', sessionKey, 'expires_at')
+    if not expiry or tonumber(expiry) <= tonumber(redis.call('TIME')[1])
+       or redis.call('GET', KEYS[1]) ~= saved[3] then return {'CLOSED'} end
+    return {'REPLAY', saved[2], saved[3], saved[4]}
+  end
+  local clock = redis.call('TIME')
+  if tonumber(clock[1])*1000 + math.floor(tonumber(clock[2])/1000) >= tonumber(ARGV[12]) then
+    return {'CLOSED'}
+  end
+end
 if redis.call('ZCARD', KEYS[3]) >= tonumber(ARGV[4]) then
-  return 'LIMIT'
+  return {'LIMIT'}
 end
 if redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', tonumber(ARGV[2])) then
   redis.call('HSET', KEYS[2],
@@ -117,9 +135,13 @@ if redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', tonumber(ARGV[2])) then
   redis.call('EXPIRE', KEYS[2], tonumber(ARGV[2]))
   redis.call('ZADD', KEYS[3], ARGV[3], ARGV[5])
   redis.call('ZADD', KEYS[4], ARGV[3], ARGV[9] .. ':' .. ARGV[5])
-  return 'OK'
+  if KEYS[5] then
+    redis.call('HSET', KEYS[5], 'seat', KEYS[1], 'session', ARGV[5], 'token', ARGV[1], 'deadline', ARGV[10])
+    redis.call('EXPIRE', KEYS[5], ARGV[11])
+  end
+  return {'OK'}
 end
-return 'TAKEN'
+return {'TAKEN'}
 `
 
 // releaseScript gives up a hold atomically, with an ownership check and a
@@ -231,8 +253,13 @@ func NewHoldStore(client *goredis.Client, holdTTL time.Duration, maxHolds int) *
 // hold.ExpiresAt (single source of truth — the use case computes it from
 // the configured TTL), never from a second clock inside the adapter.
 func (s *HoldStore) Hold(ctx context.Context, hold domain.Hold) error {
+	_, err := s.Claim(ctx, hold, appbooking.HoldKey{})
+	return err
+}
+
+func (s *HoldStore) Claim(ctx context.Context, hold domain.Hold, key appbooking.HoldKey) (domain.Hold, error) {
 	if err := hold.Validate(time.Now()); err != nil {
-		return err
+		return domain.Hold{}, err
 	}
 
 	ttl := time.Until(hold.ExpiresAt)
@@ -250,7 +277,7 @@ func (s *HoldStore) Hold(ctx context.Context, hold domain.Hold) error {
 	if ttlSeconds < 1 {
 		// ttl <= 0 despite Validate: the clock moved between validation and
 		// here. Refuse rather than write a key that is born expired.
-		return errors.New("booking: hold expired before it could be written")
+		return domain.Hold{}, errors.New("booking: hold expired before it could be written")
 	}
 
 	keys := []string{
@@ -271,19 +298,40 @@ func (s *HoldStore) Hold(ctx context.Context, hold domain.Hold) error {
 		hold.UserID,
 	}
 
-	res, err := s.holdScript.Run(ctx, s.client, keys, args...).Text()
-	if err != nil {
-		return fmt.Errorf("booking: hold script: %w", err)
+	if key.Value != "" {
+		keys = append(keys, "hold-request:"+hold.UserID+":"+key.Value)
+		args = append(args, hold.ExpiresAt.Format(time.RFC3339Nano), max(ttlSeconds, int64(appbooking.HoldKeyRetention/time.Second)), key.CreateBefore.UnixMilli())
 	}
-	switch res {
+	result, err := s.holdScript.Run(ctx, s.client, keys, args...).StringSlice()
+	if err != nil {
+		return domain.Hold{}, fmt.Errorf("booking: hold script: %w", err)
+	}
+	if len(result) == 0 {
+		return domain.Hold{}, errors.New("booking: empty hold script result")
+	}
+	switch result[0] {
 	case "OK":
-		return nil
+		return hold, nil
+	case "REPLAY":
+		if len(result) != 4 {
+			return domain.Hold{}, errors.New("booking: invalid replay result")
+		}
+		expiry, err := time.Parse(time.RFC3339Nano, result[3])
+		if err != nil {
+			return domain.Hold{}, fmt.Errorf("booking: replay deadline: %w", err)
+		}
+		hold.SessionID, hold.HoldToken, hold.ExpiresAt = result[1], result[2], expiry
+		return hold, nil
+	case "CONFLICT":
+		return domain.Hold{}, domain.ErrHoldKeyConflict
+	case "CLOSED":
+		return domain.Hold{}, domain.ErrHoldKeyClosed
 	case "LIMIT":
-		return domain.ErrHoldLimitExceeded
+		return domain.Hold{}, domain.ErrHoldLimitExceeded
 	case "TAKEN":
-		return domain.ErrSeatAlreadyHeld
+		return domain.Hold{}, domain.ErrSeatAlreadyHeld
 	default:
-		return fmt.Errorf("booking: hold script returned unexpected result %q", res)
+		return domain.Hold{}, fmt.Errorf("booking: unexpected hold script status %q", result[0])
 	}
 }
 

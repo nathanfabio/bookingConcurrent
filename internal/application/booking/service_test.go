@@ -103,8 +103,8 @@ func (f *failingReleaseStore) setFail(v bool) {
 	f.fail = v
 }
 
-func (f *failingReleaseStore) Hold(ctx context.Context, hold domain.Hold) error {
-	return f.inner.Hold(ctx, hold)
+func (f *failingReleaseStore) Claim(ctx context.Context, hold domain.Hold, key appbooking.HoldKey) (domain.Hold, error) {
+	return f.inner.Claim(ctx, hold, key)
 }
 
 func (f *failingReleaseStore) Release(ctx context.Context, sessionID, userID string) error {
@@ -137,7 +137,9 @@ type servedPastExpiryStore struct {
 
 var _ appbooking.HoldStore = servedPastExpiryStore{}
 
-func (s servedPastExpiryStore) Hold(ctx context.Context, h domain.Hold) error { return nil }
+func (s servedPastExpiryStore) Claim(ctx context.Context, h domain.Hold, key appbooking.HoldKey) (domain.Hold, error) {
+	return h, nil
+}
 
 func (s servedPastExpiryStore) Release(ctx context.Context, sessionID, userID string) error {
 	return nil

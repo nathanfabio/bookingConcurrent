@@ -101,7 +101,12 @@ func HoldHandler(svc *appbooking.Service) http.HandlerFunc {
 			return
 		}
 
-		hold, err := svc.Hold(r.Context(), userID, req.ScreeningID, seat)
+		keys := r.Header.Values("Idempotency-Key")
+		if len(keys) > 1 || (len(keys) == 1 && keys[0] == "") {
+			writeBookingError(w, r, booking.ErrInvalidHoldKey)
+			return
+		}
+		hold, err := svc.HoldWithKey(r.Context(), userID, req.ScreeningID, seat, r.Header.Get("Idempotency-Key"))
 		if err != nil {
 			writeBookingError(w, r, err)
 			return
@@ -202,6 +207,12 @@ func SeatMapHandler(svc *appbooking.Service) http.HandlerFunc {
 // ADR 0006).
 func writeBookingError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, booking.ErrInvalidHoldKey):
+		WriteError(w, http.StatusBadRequest, CodeValidation, bookingValidationMessage(err))
+	case errors.Is(err, booking.ErrHoldKeyClosed):
+		WriteError(w, http.StatusConflict, "hold_key_closed", bookingValidationMessage(err))
+	case errors.Is(err, booking.ErrHoldKeyConflict):
+		WriteError(w, http.StatusConflict, "hold_key_conflict", bookingValidationMessage(err))
 	case errors.Is(err, booking.ErrSeatAlreadyHeld):
 		WriteError(w, http.StatusConflict, CodeSeatTaken, "seat is already held")
 	case errors.Is(err, booking.ErrSeatAlreadyBooked):

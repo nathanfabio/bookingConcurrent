@@ -46,7 +46,7 @@ browser policy and does not replace authentication.
 Allowed browser origins receive credential support. Preflight OPTIONS with
 Origin and Access-Control-Request-Method returns empty 204 for GET, HEAD,
 POST or DELETE and these requested headers: Authorization, Content-Type,
-X-Request-ID, Traceparent, Tracestate. It requires no Bearer token and consumes
+Idempotency-Key, X-Request-ID, Traceparent, Tracestate. It requires no Bearer token and consumes
 no quota. Responses vary by Origin; preflight also varies by requested method
 and headers. X-Request-ID and Retry-After are exposed to browser JavaScript.
 Cookies retain SameSite=Lax (ADR 0007); enabling CORS does not enable refresh
@@ -276,6 +276,20 @@ so session IDs cannot be probed (ADR 0006).
 ### `POST /holds`
 
 Claim a seat for checkout.
+
+To recover from a lost response, generate a **lowercase UUIDv7** before the
+first attempt and send it in the optional `Idempotency-Key` header.
+Repeat the same authenticated request with that key. A live replay returns
+201 with the original session ID and deadline, including at the user's hold
+limit. The initial keyed deadline rounds up to a whole second.
+
+A fresh allocation requires a key less than 24 hours old (up to one minute
+of clock skew into the future). A malformed, repeated or future-dated
+header returns 400 `validation_error`. A key bound to a different valid
+seat returns 409 `hold_key_conflict`. After release or expiry the same
+request returns 409 `hold_key_closed`; a confirmed seat returns 409
+`seat_booked` from the durable pre-check. Use a fresh key for a new
+checkout. These semantics assume Redis retains the binding (ADR 0015).
 
 Request:
 

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type seat struct {
@@ -37,6 +39,11 @@ type checkoutFixture struct {
 
 func request(t *testing.T, method, path, token string, body any, want int, result any) {
 	t.Helper()
+	requestWithKey(t, method, path, token, body, want, result, "")
+}
+
+func requestWithKey(t *testing.T, method, path, token string, body any, want int, result any, key string) {
+	t.Helper()
 	var data []byte
 	var err error
 	if body != nil {
@@ -51,6 +58,9 @@ func request(t *testing.T, method, path, token string, body any, want int, resul
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -133,7 +143,15 @@ func TestBookingJourney(t *testing.T) {
 	var hold struct {
 		Session string `json:"session_id"`
 	}
-	request(t, "POST", "/holds", owner.Token, map[string]any{"screening_id": screening, "row": selected.Row, "number": selected.Number}, 201, &hold)
+	key, err := uuid.NewV7()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := holdPayload(screening, selected)
+	// Discard the first response body after the API has accepted the write.
+	// The original session ID is unavailable to this client until it retries.
+	requestWithKey(t, "POST", "/holds", owner.Token, payload, 201, nil, key.String())
+	requestWithKey(t, "POST", "/holds", owner.Token, payload, 201, &hold, key.String())
 	if hold.Session == "" {
 		t.Fatal("missing session_id")
 	}
@@ -159,6 +177,10 @@ func TestBookingJourney(t *testing.T) {
 	request(t, "POST", path+"/confirm", owner.Token, nil, 201, &booking)
 	if booking.ID == "" || booking.Session != hold.Session || booking.Screening != screening || booking.Row != selected.Row || booking.Number != selected.Number || booking.Status != "confirmed" {
 		t.Fatalf("unexpected booking: %+v", booking)
+	}
+	requestWithKey(t, "POST", "/holds", owner.Token, payload, 409, &rejection, key.String())
+	if rejection.Code != "seat_booked" {
+		t.Fatalf("keyed replay after confirmation: %q", rejection.Code)
 	}
 	expectSeat("booked")
 	// Tell the runner which sale the API exposed while RabbitMQ was offline.

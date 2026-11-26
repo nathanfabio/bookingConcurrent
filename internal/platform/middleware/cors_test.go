@@ -26,7 +26,7 @@ func TestCORS(t *testing.T) {
 		{name: "opaque origin", method: "POST", origin: "null", status: 403},
 		{name: "different port", method: "GET", origin: origin + ":8443", status: 403},
 		{name: "different scheme", method: "GET", origin: "http://cinema.example", status: 403},
-		{name: "preflight", method: "OPTIONS", origin: origin, requested: "POST", headers: []string{"authorization, Content-Type", "X-Request-ID, Traceparent, Tracestate"}, status: 204, allow: true},
+		{name: "preflight", method: "OPTIONS", origin: origin, requested: "POST", headers: []string{"authorization, Content-Type, Idempotency-Key", "X-Request-ID, Traceparent, Tracestate"}, status: 204, allow: true},
 		{name: "preflight without headers", method: "OPTIONS", origin: origin, requested: "DELETE", status: 204, allow: true},
 		{name: "preflight unsupported method", method: "OPTIONS", origin: origin, requested: "PUT", status: 403, allow: true},
 		{name: "method case sensitive", method: "OPTIONS", origin: origin, requested: "post", status: 403, allow: true},

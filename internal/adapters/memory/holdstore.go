@@ -49,6 +49,7 @@ var (
 // the race tests — it proves the PORT's contract (exactly one winner) can
 // be satisfied, while the integration tests prove real Redis satisfies it.
 type HoldStore struct {
+	keys        map[[2]string]holdBinding
 	mu          sync.Mutex
 	clock       Clock
 	maxHolds    int
@@ -56,6 +57,11 @@ type HoldStore struct {
 	sessions    map[string]*sessionEntry       // sessionID -> hold data
 	userHolds   map[string]map[string]struct{} // userID -> sessionIDs (user ZSET)
 	globalHolds map[string]time.Time           // "userID:sessionID" -> expiry (global ZSET member -> score)
+}
+
+type holdBinding struct {
+	hold     domain.Hold
+	forgetAt time.Time
 }
 
 type seatEntry struct {
@@ -71,6 +77,7 @@ type sessionEntry struct {
 func NewHoldStore(clock Clock, maxHolds int) *HoldStore {
 	return &HoldStore{
 		clock:       clock,
+		keys:        make(map[[2]string]holdBinding),
 		maxHolds:    maxHolds,
 		seats:       make(map[string]*seatEntry),
 		sessions:    make(map[string]*sessionEntry),
@@ -107,29 +114,58 @@ func (s *HoldStore) CountActiveHolds(ctx context.Context, now time.Time) (int64,
 
 // Hold implements booking.HoldStore.
 func (s *HoldStore) Hold(ctx context.Context, hold domain.Hold) error {
+	_, err := s.Claim(ctx, hold, appbooking.HoldKey{})
+	return err
+}
+
+func (s *HoldStore) Claim(ctx context.Context, hold domain.Hold, key appbooking.HoldKey) (domain.Hold, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.clock.Now()
 
+	bindingKey := [2]string{hold.UserID, key.Value}
+	if key.Value != "" {
+		for k, b := range s.keys {
+			if !now.Before(b.forgetAt) {
+				delete(s.keys, k)
+			}
+		}
+		if b, ok := s.keys[bindingKey]; ok {
+			old := b.hold
+			if old.ScreeningID != hold.ScreeningID || old.Seat != hold.Seat {
+				return domain.Hold{}, domain.ErrHoldKeyConflict
+			}
+			if _, live := s.sessions[old.SessionID]; !live || !now.Before(old.ExpiresAt) {
+				return domain.Hold{}, domain.ErrHoldKeyClosed
+			}
+			return old, nil
+		}
+		if !now.Before(key.CreateBefore) {
+			return domain.Hold{}, domain.ErrHoldKeyClosed
+		}
+	}
 	// Limit check first, mirroring the in-script ZCARD: stale bookkeeping
 	// counts until swept, same as Redis.
 	if len(s.userHolds[hold.UserID]) >= s.maxHolds {
-		return domain.ErrHoldLimitExceeded
+		return domain.Hold{}, domain.ErrHoldLimitExceeded
 	}
 
-	key := SeatKey(hold.ScreeningID, hold.Seat)
-	if e, ok := s.seats[key]; ok && now.Before(e.expiresAt) {
-		return domain.ErrSeatAlreadyHeld
+	seatKey := SeatKey(hold.ScreeningID, hold.Seat)
+	if e, ok := s.seats[seatKey]; ok && now.Before(e.expiresAt) {
+		return domain.Hold{}, domain.ErrSeatAlreadyHeld
 	}
 
-	s.seats[key] = &seatEntry{token: hold.HoldToken, expiresAt: hold.ExpiresAt}
+	s.seats[seatKey] = &seatEntry{token: hold.HoldToken, expiresAt: hold.ExpiresAt}
 	s.sessions[hold.SessionID] = &sessionEntry{hold: hold}
 	if s.userHolds[hold.UserID] == nil {
 		s.userHolds[hold.UserID] = make(map[string]struct{})
 	}
 	s.userHolds[hold.UserID][hold.SessionID] = struct{}{}
 	s.globalHolds[GlobalMember(hold.UserID, hold.SessionID)] = hold.ExpiresAt
-	return nil
+	if key.Value != "" {
+		s.keys[bindingKey] = holdBinding{hold, now.Add(max(appbooking.HoldKeyRetention, hold.ExpiresAt.Sub(now)))}
+	}
+	return hold, nil
 }
 
 // Release implements booking.HoldStore with the same compare-and-delete on

@@ -78,6 +78,24 @@ func NewService(holds HoldStore, bookings BookingStore, screenings ScreeningStor
 // it is NOT the arbiter — a seat can be confirmed between the check and the
 // claim, and the partial unique index re-checks at confirm time (ADR 0006).
 func (s *Service) Hold(ctx context.Context, userID, screeningID string, seat domain.Seat) (domain.Hold, error) {
+	return s.HoldWithKey(ctx, userID, screeningID, seat, "")
+}
+
+// HoldWithKey returns the original claim when a live request key replays.
+func (s *Service) HoldWithKey(ctx context.Context, userID, screeningID string, seat domain.Seat, key string) (domain.Hold, error) {
+	var binding HoldKey
+	if key != "" {
+		id, err := uuid.Parse(key)
+		if err != nil || id.Version() != 7 || id.Variant() != uuid.RFC4122 || id.String() != key {
+			return domain.Hold{}, domain.ErrInvalidHoldKey
+		}
+		sec, nsec := id.Time().UnixTime()
+		age := s.now().Sub(time.Unix(sec, nsec))
+		if age < -time.Minute {
+			return domain.Hold{}, domain.ErrInvalidHoldKey
+		}
+		binding = HoldKey{Value: key, CreateBefore: time.Unix(sec, nsec).Add(24 * time.Hour)}
+	}
 	screening, err := s.screenings.Get(ctx, screeningID)
 	if err != nil {
 		return domain.Hold{}, err // ErrScreeningNotFound or infra
@@ -103,15 +121,15 @@ func (s *Service) Hold(ctx context.Context, userID, screeningID string, seat dom
 		HoldToken:   uuid.NewString(),
 		ExpiresAt:   now.Add(s.holdTTL),
 	}
+	if key != "" && hold.ExpiresAt.Nanosecond() != 0 {
+		hold.ExpiresAt = hold.ExpiresAt.Truncate(time.Second).Add(time.Second)
+	}
 	// Defense in depth: a malformed hold (bad TTL arithmetic, empty fields)
 	// must die here, not inside the store.
 	if err := hold.Validate(now); err != nil {
 		return domain.Hold{}, fmt.Errorf("booking: hold: %w", err)
 	}
-	if err := s.holds.Hold(ctx, hold); err != nil {
-		return domain.Hold{}, err // ErrSeatAlreadyHeld, ErrHoldLimitExceeded, infra
-	}
-	return hold, nil
+	return s.holds.Claim(ctx, hold, binding)
 }
 
 // Confirm turns a live hold into the durable sales record. The consistency

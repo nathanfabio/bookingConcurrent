@@ -44,7 +44,7 @@ func CORS(origins []string, writeDenied func(http.ResponseWriter, *http.Request)
 				return
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, Traceparent, Tracestate")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, X-Request-ID, Traceparent, Tracestate")
 			w.WriteHeader(http.StatusNoContent)
 		})
 	}
@@ -63,7 +63,7 @@ func corsHeaders(values []string) bool {
 	for _, value := range values {
 		for _, header := range strings.Split(value, ",") {
 			switch strings.ToLower(strings.TrimSpace(header)) {
-			case "authorization", "content-type", "x-request-id", "traceparent", "tracestate":
+			case "authorization", "content-type", "idempotency-key", "x-request-id", "traceparent", "tracestate":
 			default:
 				return false
 			}

@@ -6,6 +6,7 @@ package booking
 
 import (
 	"context"
+	"time"
 
 	domain "github.com/nathanfabio/bookingConcurrent/internal/domain/booking"
 )
@@ -21,13 +22,15 @@ import (
 // All implementations surface the same domain errors from
 // internal/domain/booking so use cases can stay implementation-agnostic.
 type HoldStore interface {
-	// Hold atomically claims the seat for hold.SessionID if and only if:
+	// Claim atomically claims the seat for hold.SessionID if and only if:
 	// the seat is not currently held, the user is under their hold limit,
 	// and no conflicting hold bookkeeping exists. The claim self-expires at
 	// hold.ExpiresAt (the store's TTL mechanism).
 	//
-	// Errors: domain.ErrSeatAlreadyHeld, domain.ErrHoldLimitExceeded.
-	Hold(ctx context.Context, hold domain.Hold) error
+	// Matching live retries return the original hold before the quota check.
+	// A successful key remains bound after release or expiry. An absent key
+	// past its creation window cannot allocate a seat.
+	Claim(ctx context.Context, hold domain.Hold, key HoldKey) (domain.Hold, error)
 
 	// Release atomically gives up the hold for sessionID, but only if the
 	// caller is its owner AND the seat key still belongs to this hold
@@ -53,4 +56,14 @@ type HoldStore interface {
 	// lives in Hold/Confirm, not here. Implementations must never fail the
 	// whole enumeration over a single corrupt entry: skip it and move on.
 	HeldSeats(ctx context.Context, screeningID string) ([]domain.Seat, error)
+}
+
+// HoldKeyRetention outlasts the accepted UUID age plus clock tolerance.
+const HoldKeyRetention = 25 * time.Hour
+
+// HoldKey limits new allocations using the timestamp carried by a UUIDv7.
+// The zero value requests an ordinary unkeyed claim.
+type HoldKey struct {
+	Value        string
+	CreateBefore time.Time
 }

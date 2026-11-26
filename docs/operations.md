@@ -194,8 +194,9 @@ Restore Redis connectivity and check readiness again. The API should
 return 200 without a process restart. Read the screening's seat map to
 verify the committed seat remains booked. For the connection failure
 exercised here, the attempted new hold never reached Redis, so its seat
-remains available and can be held and released. A timeout *after* a write
-reaches Redis is a different failure mode.
+remains available and can be held and released. If a response is lost *after* the write reaches Redis, retry the same
+authenticated request with the original UUIDv7 Idempotency-Key to recover
+the session and deadline. See [ADR 0015](adr/0015-hold-idempotency.md).
 
 To reproduce, run `make test-e2e`. Within its disposable Compose project,
 the runner moves the Redis TCP listener off the mapped port and closes

@@ -17,6 +17,10 @@ import (
 // these to status codes centrally; the identity (errors.Is) is what callers
 // branch on, so the messages are for humans and logs.
 var (
+	ErrInvalidHoldKey  = errors.New("booking: Idempotency-Key must be a canonical UUIDv7 with a current timestamp")
+	ErrHoldKeyClosed   = errors.New("booking: idempotent hold is no longer available")
+	ErrHoldKeyConflict = errors.New("booking: idempotency key already used for a different seat")
+
 	// ErrSeatAlreadyHeld: the seat is currently held by someone (SET NX lost).
 	ErrSeatAlreadyHeld = errors.New("booking: seat is already held")
 	// ErrHoldLimitExceeded: the user already holds the maximum number of seats.

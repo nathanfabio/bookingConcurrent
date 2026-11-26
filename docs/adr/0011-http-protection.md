@@ -32,7 +32,7 @@ infer trust from Host or forwarded headers.
 
 Allowed origins receive an exact `Access-Control-Allow-Origin` and
 `Access-Control-Allow-Credentials: true`. Preflight accepts GET, HEAD, POST,
-DELETE and only Authorization, Content-Type, X-Request-ID, Traceparent and
+DELETE and only Authorization, Content-Type, Idempotency-Key (ADR 0015), X-Request-ID, Traceparent and
 Tracestate request headers. It returns an empty 204 before authentication or
 quota consumption. Ordinary OPTIONS requests continue to routing. Preflight
 does not assert that a particular endpoint exists; the actual request still

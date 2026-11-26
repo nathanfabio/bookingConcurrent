@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -260,7 +261,9 @@ type failingRelease struct {
 
 func (f *failingRelease) setFail(v bool) { f.mu.Lock(); f.fail = v; f.mu.Unlock() }
 
-func (f *failingRelease) Hold(ctx context.Context, h domain.Hold) error { return f.inner.Hold(ctx, h) }
+func (f *failingRelease) Claim(ctx context.Context, h domain.Hold, key appbooking.HoldKey) (domain.Hold, error) {
+	return f.inner.Claim(ctx, h, key)
+}
 
 func (f *failingRelease) Release(ctx context.Context, sessionID, userID string) error {
 	f.mu.Lock()
@@ -604,5 +607,44 @@ func assertErrorResponse(t *testing.T, rec *httptest.ResponseRecorder, status in
 	}
 	if env.Code != code {
 		t.Errorf("code = %q, want %s", env.Code, code)
+	}
+}
+
+func TestKeyedHoldHTTPContract(t *testing.T) {
+	env := newBookingEnv(1)
+	env.seedCatalog()
+	// UUIDv7 starts with a 48-bit Unix timestamp in milliseconds.
+	stamp := env.clock.Now().UnixMilli()
+	key := fmt.Sprintf("%08x-%04x-7000-8000-000000000001", stamp>>16, stamp&0xffff)
+	post := func(number int, keys ...string) *httptest.ResponseRecorder {
+		r := reqAs("POST", "/holds", holdBody("A", number), aliceID)
+		for _, value := range keys {
+			r.Header.Add("Idempotency-Key", value)
+		}
+		rec := httptest.NewRecorder()
+		HoldHandler(env.svc).ServeHTTP(rec, r)
+		return rec
+	}
+	for _, keys := range [][]string{{""}, {"invalid"}, {key, key}} {
+		if got := post(1, keys...); got.Code != 400 {
+			t.Fatalf("invalid key: %d", got.Code)
+		}
+	}
+	first := post(1, key)
+	env.clock.Advance(time.Second)
+	replay := post(1, key)
+	if first.Code != 201 || replay.Code != 201 || first.Body.String() != replay.Body.String() {
+		t.Fatalf("replay: %d %s, original: %d %s", replay.Code, replay.Body, first.Code, first.Body)
+	}
+	if got := post(2, key); got.Code != 409 || !strings.Contains(got.Body.String(), "hold_key_conflict") {
+		t.Fatalf("changed seat: %d %s", got.Code, got.Body)
+	}
+	env.clock.Advance(bookingTestTTL)
+	if got := post(1, key); got.Code != 409 || !strings.Contains(got.Body.String(), "hold_key_closed") {
+		t.Fatalf("expired hold: %d %s", got.Code, got.Body)
+	}
+	env.clock.Advance(26 * time.Hour)
+	if got := post(1, key); got.Code != 409 || !strings.Contains(got.Body.String(), "hold_key_closed") {
+		t.Fatalf("late retry after binding eviction: %d %s", got.Code, got.Body)
 	}
 }
