@@ -127,3 +127,7 @@ replays the original booking and completed sandbox refund against the copy.
 A second restore verifies worker delivery from a backup taken while the
 booking event was still pending.
 See the [restore rehearsal and recovery boundary](docs/operations.md#rehearse-a-postgres-restore).
+
+The queue-loss drill verifies manual republication of a broker-confirmed event
+and consumer deduplication using the original event ID.
+[Recovery procedure](docs/operations.md#recover-a-confirmed-publication-after-queue-loss).

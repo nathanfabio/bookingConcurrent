@@ -174,3 +174,13 @@ mutually independent). The FIVE ports that do exist (`EventPublisher`,
   injected mark failure → duplicate delivery → exactly one notification and
   one claim row), `TestConsumerDeliversToHandlerAndAcks`,
   `TestProcessedEventClaimConcurrentExactlyOneWinner`.
+
+### Operational recovery after queue loss
+
+A published row with no consumer claim can represent an in-flight message
+or lost broker data. The relay keeps its ordinary pending-only scan. An
+operator who verifies loss can run the one-shot worker republication command
+for one event ID. Reusing the stored envelope preserves consumer deduplication
+and the initial publication timestamp. A claim racing the operator's read
+can result in an extra broker delivery. The recovery decision and broker
+result are visible in the operator command's logs. See the operations guide.

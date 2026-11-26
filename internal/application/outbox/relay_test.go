@@ -260,3 +260,33 @@ func TestRelayListFailurePropagates(t *testing.T) {
 		t.Errorf("publisher saw events despite a list failure")
 	}
 }
+
+func TestManualRepublicationEligibility(t *testing.T) {
+	event := seedEvent(t, memory.NewOutboxStore(memory.NewManualClock(time.Now())))
+	for _, tc := range []struct {
+		name                 string
+		published, processed bool
+		want                 string
+	}{
+		{"normal relay still responsible", false, false, ""},
+		{"reviewed loss", true, false, "republished"},
+		{"claim already recorded", true, true, "already_processed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pub := memory.NewEventPublisher()
+			d := appoutbox.Delivery{Event: event, Published: tc.published, Processed: tc.processed}
+			got, err := d.Republish(t.Context(), pub)
+			if got != tc.want || (err != nil) != (tc.want == "") {
+				t.Fatalf("result=%q, err=%v", got, err)
+			}
+			sent := pub.Published()
+			if got == "republished" {
+				if len(sent) != 1 || sent[0].ID != event.ID || sent[0].Type != event.Type || string(sent[0].Payload) != string(event.Payload) {
+					t.Fatalf("unexpected envelope: %+v", sent)
+				}
+			} else if len(sent) != 0 {
+				t.Fatal("ineligible event was published")
+			}
+		})
+	}
+}

@@ -56,7 +56,7 @@ curl -fsS --max-time 2 "http://$HTTP_ADDR/readyz" >/dev/null
 psql=( "${compose[@]}" exec -T postgres psql -XAtq -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" )
 
 start_worker() {
-  LOG_LEVEL=debug "$work/worker" >>"$E2E_WORKER_LOG" 2>&1 &
+  LOG_LEVEL=debug "$work/worker" "$@" >>"$E2E_WORKER_LOG" 2>&1 &
   worker_pid=$!
 }
 wait_for() {
@@ -240,3 +240,41 @@ notified_restored_booking() {
 }
 wait_for "restored worker notification for original booking" notified_restored_booking
 echo "Pending outbox restore verified: booking $booking_id, event $event_id"
+
+# Recover another isolated copy of the real sale with only its consumer
+# paused. The publisher must actually route the message before we lose it.
+kill -TERM "$worker_pid"
+wait "$worker_pid"
+worker_pid=
+restore_target "$work/pending.dump" booking_queue_loss 3
+export E2E_WORKER_LOG="$work/queue-loss-worker.log"
+start_worker --without-consumer
+publication_stamp() {
+  "${psql[@]}" -v id="$event_id" <<'SQL'
+SELECT published_at FROM outbox WHERE event_id=:'id';
+SQL
+}
+queue_depth() {
+  local counts
+  counts=$("${rabbitctl[@]}" list_queues -p "$POSTGRES_DB" --quiet --no-table-headers name messages_ready consumers)
+  [[ "$counts" == "$RABBITMQ_QUEUE"$'\t'"$1"$'\t0' ]]
+}
+wait_for "one queued message and zero consumers" queue_depth 1
+publication_recorded() {
+  first_stamp=$(publication_stamp) && [[ -n "$first_stamp" ]]
+}
+wait_for "first publication recorded" publication_recorded
+"${rabbitctl[@]}" purge_queue -p "$POSTGRES_DB" "$RABBITMQ_QUEUE"
+wait_for "queue message lost" queue_depth 0
+[[ $("${psql[@]}" -c 'SELECT count(*) FROM processed_events') == 0 ]]
+[[ $("$work/worker" republish "$event_id") == republished ]]
+wait_for "original event queued again" queue_depth 1
+kill -TERM "$worker_pid"
+wait "$worker_pid"
+worker_pid=
+start_worker
+wait_for "manual republication processed" assert_delivery
+wait_for "manual republication notified original booking" notified_restored_booking
+[[ $("$work/worker" republish "$event_id") == already_processed ]]
+[[ "$(publication_stamp)" == "$first_stamp" ]]
+echo "Manual recovery verified for published event $event_id after queue loss"

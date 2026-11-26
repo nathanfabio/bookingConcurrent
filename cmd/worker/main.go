@@ -34,6 +34,7 @@ import (
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/telemetry"
 	platformworker "github.com/nathanfabio/bookingConcurrent/internal/platform/worker"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 )
@@ -48,6 +49,18 @@ func main() {
 }
 
 func run() error {
+	args := os.Args[1:]
+	withoutConsumer := len(args) == 1 && args[0] == "--without-consumer"
+	var replayID string
+	if len(args) == 2 && args[0] == "republish" {
+		id, err := uuid.Parse(args[1])
+		if err != nil {
+			return fmt.Errorf("invalid event UUID: %w", err)
+		}
+		replayID = id.String()
+	} else if len(args) > 0 && !withoutConsumer {
+		return errors.New("usage: worker [--without-consumer | republish EVENT_UUID]")
+	}
 	// Fail fast: a misconfigured process must not boot (CLAUDE.md §10).
 	// config.Load is SHARED with the API, so the worker also validates
 	// HTTP_ADDR / auth / payment settings it never uses — the accepted
@@ -101,7 +114,7 @@ func run() error {
 	}
 	defer pool.Close()
 
-	if cfg.Env == config.EnvDevelopment {
+	if cfg.Env == config.EnvDevelopment && replayID == "" {
 		// Dev-only convenience, mirroring cmd/api: auto-migrate so a dev box
 		// is never silently behind. Goose's version table makes a concurrent
 		// api+worker first boot benign (whoever wins the migration, the other
@@ -135,6 +148,23 @@ func run() error {
 		return fmt.Errorf("publisher: %w", err) // malformed URL: a config error, no retry helps
 	}
 	defer func() { _ = publisher.Close() }()
+	if replayID != "" {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		ctx, span := otel.Tracer("cmd/worker").Start(ctx, "manual outbox republication")
+		defer span.End()
+		delivery, err := postgresadapter.NewOutboxRepo(pool).InspectDelivery(ctx, replayID)
+		if err != nil {
+			return err
+		}
+		result, err := delivery.Republish(ctx, publisher)
+		if err != nil {
+			return err
+		}
+		log.InfoContext(ctx, "manual outbox republication", "event_id", replayID, "result", result)
+		fmt.Println(result)
+		return nil
+	}
 	consumer, err := messagingadapter.NewConsumer(cfg.Broker.URL, topology, cfg.Broker.Prefetch)
 	if err != nil {
 		return fmt.Errorf("consumer: %w", err)
@@ -281,7 +311,11 @@ func run() error {
 		"sweep_interval", cfg.Worker.SweepInterval.String(),
 	)
 
-	runErr := platformworker.Run(ctx, log, relayJob, consumerJob, sweeperJob, refundJob)
+	jobs := []platformworker.Job{relayJob, sweeperJob, refundJob}
+	if !withoutConsumer {
+		jobs = append(jobs, consumerJob)
+	}
+	runErr := platformworker.Run(ctx, log, jobs...)
 
 	// platform/worker.Run already normalizes clean cancellation to nil;
 	// anything left is a real failure worth a non-zero exit.

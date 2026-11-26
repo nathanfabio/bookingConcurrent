@@ -39,3 +39,11 @@ UPDATE outbox
 SET published_at = now()
 WHERE event_id = ANY($1::uuid[])
   AND published_at IS NULL;
+
+-- name: InspectOutboxDelivery :one
+-- One snapshot for the operator's manual decision. A consumer can still
+-- claim the event immediately afterwards; the original ID must be reused.
+SELECT o.event_id, o.event_type, o.payload,
+       (o.published_at IS NOT NULL)::boolean AS published,
+       EXISTS (SELECT 1 FROM processed_events p WHERE p.event_id=o.event_id) AS processed
+FROM outbox o WHERE o.event_id = $1;

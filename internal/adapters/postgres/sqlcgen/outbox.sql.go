@@ -39,6 +39,36 @@ func (q *Queries) InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventPa
 	return err
 }
 
+const inspectOutboxDelivery = `-- name: InspectOutboxDelivery :one
+SELECT o.event_id, o.event_type, o.payload,
+       (o.published_at IS NOT NULL)::boolean AS published,
+       EXISTS (SELECT 1 FROM processed_events p WHERE p.event_id=o.event_id) AS processed
+FROM outbox o WHERE o.event_id = $1
+`
+
+type InspectOutboxDeliveryRow struct {
+	EventID   string
+	EventType string
+	Payload   []byte
+	Published bool
+	Processed bool
+}
+
+// One snapshot for the operator's manual decision. A consumer can still
+// claim the event immediately afterwards; the original ID must be reused.
+func (q *Queries) InspectOutboxDelivery(ctx context.Context, eventID string) (InspectOutboxDeliveryRow, error) {
+	row := q.db.QueryRow(ctx, inspectOutboxDelivery, eventID)
+	var i InspectOutboxDeliveryRow
+	err := row.Scan(
+		&i.EventID,
+		&i.EventType,
+		&i.Payload,
+		&i.Published,
+		&i.Processed,
+	)
+	return i, err
+}
+
 const listPendingOutboxEvents = `-- name: ListPendingOutboxEvents :many
 SELECT event_id, event_type, payload
 FROM outbox

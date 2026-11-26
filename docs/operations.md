@@ -241,6 +241,38 @@ taken by the dump. Later commits require a separate recovery strategy such
 as archived WAL and point-in-time recovery. Transient holds and queued
 RabbitMQ messages live outside Postgres. The two snapshots cover events pending publication and events already
 consumed. A published event still waiting in a lost broker queue would
-require separate reconciliation. The sandbox provider ledger happens
+require [manual investigation and recovery](#recover-a-confirmed-publication-after-queue-loss). The sandbox provider ledger happens
 to share this database. With a real provider, reconcile its independent
 receipts and idempotency keys before resuming payment or refund submissions.
+
+## Recover a confirmed publication after queue loss
+
+Use the booking diagnostic query above to find the original event UUID.
+If publication is pending, restore relay connectivity and let it retry.
+For a published event with no consumer claim, inspect the correct RabbitMQ
+virtual host, queue bindings, ready and unacknowledged messages, connected
+consumers and worker logs. A missing claim is also normal during delivery.
+Authorize a manual replay only after investigating the missing notification.
+
+With the packaged stack running, set `event_id` to the reviewed UUID and run:
+
+```bash
+docker compose -f compose.yaml -f compose.apps.yaml run --rm --no-deps worker republish "$event_id"
+```
+
+The one-shot worker reads the stored envelope and submits it with its
+original message ID. `republished` means the broker confirmed the publish.
+Check the consumer claim and notification log separately. A subsequent
+call returns `already_processed` once the claim exists. The command leaves
+the sale, outbox payload and original `published_at` unchanged. Keep its
+output and worker logs with the incident record. If publication times out,
+check the consumer and broker before repeating the command; acceptance may
+have occurred before the response was lost.
+
+The drill uses `worker --without-consumer` to keep the relay and other jobs
+running while leaving the disposable queue undrained. It observes one ready
+message, purges that **test** queue, and verifies it is empty with no
+consumer claim. Manual republication restores delivery of the original
+event. Concurrent manual submissions can produce duplicate deliveries;
+the consumer's claim is keyed by event ID. A crash after claim and before
+notification has the separate recovery semantics described in ADR 0009.

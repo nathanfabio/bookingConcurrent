@@ -62,3 +62,11 @@ func (r *OutboxRepo) MarkPublished(ctx context.Context, eventIDs []string) error
 	}
 	return nil
 }
+
+func (r *OutboxRepo) InspectDelivery(ctx context.Context, id string) (appoutbox.Delivery, error) {
+	row, err := r.q.InspectOutboxDelivery(ctx, id)
+	if err != nil {
+		return appoutbox.Delivery{}, fmt.Errorf("inspect outbox event %s: %w", id, err)
+	}
+	return appoutbox.Delivery{Event: appoutbox.Event{ID: row.EventID, Type: row.EventType, Payload: row.Payload}, Published: row.Published, Processed: row.Processed}, nil
+}
