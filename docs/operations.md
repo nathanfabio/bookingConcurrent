@@ -124,8 +124,17 @@ preserves the sale. The other outcomes identify an unknown payment,
 unsupported gateway, missing capture, missing deadline, or future deadline.
 Historical captures with unknown deadlines still require manual investigation.
 
-An authorized request stays pending. The next slice will execute it through
-the sandbox gateway and record completion. For recovery, retain both the
-payment and its request. Rolling back migration 00012 drops the request
-ledger and removes the booking guard; preserve the ledger and resolve any
-pending requests before considering a schema downgrade.
+After migration 00013, the worker polls for authorized sandbox refunds
+every `WORKER_REFUND_POLL_INTERVAL` (default 5s), up to
+`WORKER_REFUND_BATCH_SIZE` (default 50) per pass. Repeat the request query
+above to see the last attempt, completion time and provider receipt. The
+worker sets the payment to `refunded` in the transaction that records
+completion. Repeating the authorization still returns `already_requested`.
+
+If a request remains pending, check worker logs for its payment ID and
+verify Postgres connectivity. The worker retries the original payment ID
+after restart, including when the provider accepted a refund and its
+response was lost. A mismatch in amount, currency, intent or receipt
+requires investigation. Keep the original authorization and receipt intact.
+Rolling back migrations 00012 or 00013 drops audit or idempotency records.
+Preserve those records and reconcile outstanding operations before a downgrade.

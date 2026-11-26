@@ -74,14 +74,12 @@ const (
 	// StatusCaptured: the money has moved. This is the state the booking
 	// confirm gate requires (ErrPaymentNotCaptured fires without it).
 	StatusCaptured Status = "captured"
-	// StatusRefunding: a refund of a captured payment is in flight. Modeled,
-	// not reachable in M5 (refunds deferred — ADR 0008, CLAUDE.md §13 "don't
-	// gold-plate"). It still blocks new intents for the session on purpose:
-	// a refund in flight must not race a fresh charge for the same seat.
+	// StatusRefunding records an authorized full refund pending provider completion.
+	// It blocks another active intent until the worker records the receipt.
 	StatusRefunding Status = "refunding"
 	// StatusRefunded: the captured money was returned. Terminal for the
 	// active-intent index (migration 00009 excludes it), so a refunded
-	// session can mint a new intent. Not reachable in M5.
+	// session can mint a new intent. ADR 0014 defines completion.
 	StatusRefunded Status = "refunded"
 	// StatusFailed: the gateway declined, or we failed the row ourselves
 	// (e.g. webhook amount mismatch). Terminal — money that actually moved

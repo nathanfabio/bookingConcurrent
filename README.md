@@ -11,7 +11,7 @@ adapters implement them, and `cmd/` wires dependencies (see `docs/adr/`).
 - `cmd/api` — HTTP service: auth, catalog, seat map, holds, payments.
 - `cmd/worker` — background jobs: the transactional-outbox relay, the
   `BookingConfirmed` consumer (ADR 0009), and the hold-expiry sweeper
-  (ADR 0010).
+  (ADR 0010), and authorized sandbox refunds (ADR 0014).
 
 ### Running locally
 

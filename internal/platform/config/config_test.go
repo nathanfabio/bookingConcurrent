@@ -47,6 +47,8 @@ func setValidEnv(t *testing.T) {
 		"RABBITMQ_PREFETCH":             "10",
 		"WORKER_RELAY_POLL_INTERVAL":    "5s",
 		"WORKER_RELAY_BATCH_SIZE":       "100",
+		"WORKER_REFUND_POLL_INTERVAL":   "7s",
+		"WORKER_REFUND_BATCH_SIZE":      "15",
 		"WORKER_SWEEP_INTERVAL":         "30s",
 		"WORKER_SWEEP_BATCH_SIZE":       "500",
 		"PAYMENT_PROVIDER":              "fake",
@@ -103,6 +105,9 @@ func TestLoadValid(t *testing.T) {
 	if cfg.Worker.RelayBatchSize != 100 {
 		t.Errorf("Worker.RelayBatchSize = %d, want 100", cfg.Worker.RelayBatchSize)
 	}
+	if cfg.Worker.RefundPollInterval != 7*time.Second || cfg.Worker.RefundBatchSize != 15 {
+		t.Errorf("unexpected refund worker config: %+v", cfg.Worker)
+	}
 	if cfg.Worker.SweepInterval != 30*time.Second {
 		t.Errorf("Worker.SweepInterval = %s, want 30s", cfg.Worker.SweepInterval)
 	}
@@ -129,7 +134,7 @@ func TestLoadDefaults(t *testing.T) {
 		"MAX_ACTIVE_HOLDS", "POSTGRES_SSLMODE", "PAYMENT_PROVIDER", "OTEL_ENABLED",
 		"RABBITMQ_EXCHANGE", "RABBITMQ_QUEUE", "RABBITMQ_PREFETCH",
 		"WORKER_RELAY_POLL_INTERVAL", "WORKER_RELAY_BATCH_SIZE",
-		"WORKER_SWEEP_INTERVAL", "WORKER_SWEEP_BATCH_SIZE",
+		"WORKER_SWEEP_INTERVAL", "WORKER_SWEEP_BATCH_SIZE", "WORKER_REFUND_POLL_INTERVAL", "WORKER_REFUND_BATCH_SIZE",
 	} {
 		t.Setenv(k, "")
 	}
@@ -164,6 +169,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Worker.RelayBatchSize != 100 {
 		t.Errorf("default Worker.RelayBatchSize = %d, want 100", cfg.Worker.RelayBatchSize)
+	}
+	if cfg.Worker.RefundPollInterval != 5*time.Second || cfg.Worker.RefundBatchSize != 50 {
+		t.Errorf("unexpected refund worker config: %+v", cfg.Worker)
 	}
 	if cfg.Worker.SweepInterval != 30*time.Second {
 		t.Errorf("default Worker.SweepInterval = %s, want 30s", cfg.Worker.SweepInterval)
@@ -226,6 +234,8 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"prefetch not an int", "RABBITMQ_PREFETCH", "lots", "RABBITMQ_PREFETCH"},
 		{"bad relay interval", "WORKER_RELAY_POLL_INTERVAL", "soon", "WORKER_RELAY_POLL_INTERVAL"},
 		{"relay batch out of range", "WORKER_RELAY_BATCH_SIZE", "0", "WORKER_RELAY_BATCH_SIZE"},
+		{"bad refund interval", "WORKER_REFUND_POLL_INTERVAL", "0s", "WORKER_REFUND_POLL_INTERVAL"},
+		{"bad refund batch size", "WORKER_REFUND_BATCH_SIZE", "-1", "WORKER_REFUND_BATCH_SIZE"},
 		{"bad sweep interval", "WORKER_SWEEP_INTERVAL", "every so often", "WORKER_SWEEP_INTERVAL"},
 		{"sweep batch out of range", "WORKER_SWEEP_BATCH_SIZE", "10001", "WORKER_SWEEP_BATCH_SIZE"},
 		{"http addr without port", "HTTP_ADDR", "localhost", "HTTP_ADDR"},

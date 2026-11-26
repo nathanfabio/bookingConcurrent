@@ -22,11 +22,13 @@ import (
 
 	messagingadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/messaging"
 	notificationadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/notification"
+	paymentadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/payment"
 	postgresadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/postgres"
 	redisadapter "github.com/nathanfabio/bookingConcurrent/internal/adapters/redis"
 	appholdexpiry "github.com/nathanfabio/bookingConcurrent/internal/application/holdexpiry"
 	appnotification "github.com/nathanfabio/bookingConcurrent/internal/application/notification"
 	appoutbox "github.com/nathanfabio/bookingConcurrent/internal/application/outbox"
+	"github.com/nathanfabio/bookingConcurrent/internal/application/refund"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/config"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/logger"
 	"github.com/nathanfabio/bookingConcurrent/internal/platform/telemetry"
@@ -249,6 +251,27 @@ func run() error {
 		},
 	}
 
+	processor := refund.Processor{
+		Store:     postgresadapter.RefundRepo{Pool: pool},
+		Gateway:   paymentadapter.SandboxRefundGateway{Pool: pool},
+		BatchSize: cfg.Worker.RefundBatchSize,
+	}
+	refundJob := platformworker.Job{Name: "sandbox-refunds", Run: func(ctx context.Context) error {
+		return platformworker.Tick(ctx, cfg.Worker.RefundPollInterval, func(ctx context.Context) error {
+			ctx, span := otel.Tracer("cmd/worker").Start(ctx, "execute sandbox refunds")
+			defer span.End()
+			n, err := processor.RunOnce(ctx)
+			if n > 0 {
+				log.InfoContext(ctx, "sandbox refunds completed", "count", n)
+			}
+			if err != nil && ctx.Err() == nil {
+				span.SetStatus(codes.Error, "refund execution failed")
+				log.ErrorContext(ctx, "refund pass incomplete", "error", err)
+			}
+			return nil
+		})
+	}}
+
 	log.Info("worker starting",
 		"service", cfg.ServiceName,
 		"env", string(cfg.Env),
@@ -258,7 +281,7 @@ func run() error {
 		"sweep_interval", cfg.Worker.SweepInterval.String(),
 	)
 
-	runErr := platformworker.Run(ctx, log, relayJob, consumerJob, sweeperJob)
+	runErr := platformworker.Run(ctx, log, relayJob, consumerJob, sweeperJob, refundJob)
 
 	// platform/worker.Run already normalizes clean cancellation to nil;
 	// anything left is a real failure worth a non-zero exit.

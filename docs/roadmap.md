@@ -43,11 +43,14 @@ decision and retry semantics before introducing a real provider.
 **Sandbox refund authorization**: after review, a database operation locks
 the captured payment, checks the deadline and booking, and records one
 full-refund request. Confirmation locks the same payment at insert time.
-The worker-side submission and recovery step remains open.
+The worker submits authorized refunds with a stable payment key. The fake
+gateway persists one receipt per key and the worker atomically completes
+the request and payment. An integration test loses the provider response,
+then races restarted processors against the same request.
 
 ## Deferred provider work
 
-Implement the durable refund protocol before introducing real payments.
+Validate provider-specific idempotency retention, lookup and webhook semantics before introducing real payments.
 Replace claim-before-notify when introducing a real notifier, using a
 documented delivery policy and provider idempotency where available.
 

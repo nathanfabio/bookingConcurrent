@@ -38,7 +38,7 @@ existing booking has its own lifecycle and falls outside this report.
    READ COMMITTED statement with a fresh snapshot.
 2. Commit one full-refund request keyed uniquely by payment ID in that
    transaction. Migration 00012 implements the sandbox authorization and
-   persists the full amount, currency and reviewer. In the next slice a
+   persists the full amount, currency and reviewer. The
    worker submits the request using a stable provider
    idempotency key derived from that ID. Duplicate reviews, timeouts,
    process restarts and webhook replays reuse the same request.
@@ -53,6 +53,16 @@ The report costs one database query per inspection and needs no polling
 worker. The sandbox keeps the captured record for inspection. Reading the
 view has no side effects. Captures can appear briefly during normal checkout
 and disappear on booking commit. Detection time depends on how frequently
-an operator inspects the report. Real-money rollout requires implementing
-and testing the refund protocol, including concurrent confirmation and a
-crash after provider acceptance.
+an operator inspects the report. Migration 00013 gives the fake gateway a receipt ledger in Postgres.
+It shares the local database for deployment convenience and commits its
+acceptance independently from the booking system. A repeated submission
+with matching terms retrieves the original receipt, including after a
+process restart. Changed terms cause an error. A real provider requires
+verification of its own key retention, lookup and failure behavior.
+
+Polling favors requests with the oldest attempt, including never-attempted
+requests first. Concurrent workers can submit the same key. Once a receipt
+returns, the worker locks the payment and atomically records the receipt,
+completion time and refunded state. A repeated completion verifies the
+committed reference. Recovery therefore works on either side of the local
+commit without holding a database lock across the provider call.

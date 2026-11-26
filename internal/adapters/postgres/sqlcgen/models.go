@@ -78,11 +78,23 @@ type RefreshToken struct {
 }
 
 type RefundRequest struct {
-	PaymentID   string
-	AmountCents int32
-	Currency    string
-	RequestedAt pgtype.Timestamptz
-	RequestedBy string
+	PaymentID         string
+	AmountCents       int32
+	Currency          string
+	RequestedAt       pgtype.Timestamptz
+	RequestedBy       string
+	LastAttemptAt     pgtype.Timestamptz
+	CompletedAt       pgtype.Timestamptz
+	ProviderReference pgtype.Text
+}
+
+type SandboxRefundReceipt struct {
+	IdempotencyKey string
+	IntentID       string
+	AmountCents    int32
+	Currency       string
+	Reference      string
+	AcceptedAt     pgtype.Timestamptz
 }
 
 type Screening struct {

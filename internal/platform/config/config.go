@@ -170,6 +170,8 @@ type Broker struct {
 // validated config for every binary beats per-binary loaders at this scale;
 // the alternative (splitting Load) is a refactor with no behavioral payoff.
 type Worker struct {
+	RefundPollInterval time.Duration
+	RefundBatchSize    int
 	// RelayPollInterval is how often the outbox relay runs a pass. Polling
 	// (vs LISTEN/NOTIFY) is the deliberate choice: it is stateless, survives
 	// Postgres restarts without a notification channel to rebuild, and a
@@ -319,6 +321,8 @@ func Load() (*Config, error) {
 	// -- worker ------------------------------------------------------------------------
 	cfg.Worker.RelayPollInterval = duration("WORKER_RELAY_POLL_INTERVAL", 5*time.Second, fail)
 	cfg.Worker.RelayBatchSize = intInRange("WORKER_RELAY_BATCH_SIZE", 100, 1, 10000, fail)
+	cfg.Worker.RefundPollInterval = duration("WORKER_REFUND_POLL_INTERVAL", 5*time.Second, fail)
+	cfg.Worker.RefundBatchSize = intInRange("WORKER_REFUND_BATCH_SIZE", 50, 1, 10000, fail)
 	cfg.Worker.SweepInterval = duration("WORKER_SWEEP_INTERVAL", 30*time.Second, fail)
 	cfg.Worker.SweepBatchSize = intInRange("WORKER_SWEEP_BATCH_SIZE", 500, 1, 10000, fail)
 

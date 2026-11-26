@@ -133,8 +133,8 @@ func (s *Service) CreateIntent(ctx context.Context, userID, sessionID string) (I
 // own API never charges an expired hold. A tiny window remains — the hold
 // can expire between the gate and the capture — and its outcome is honest
 // bookkeeping, not lost money: the payment row shows captured, booking
-// confirm answers its expired-hold 404, and the refund path (deferred to a
-// refunds milestone) is the operational exit.
+// confirm answers its expired-hold 404, and the reviewed refund path in ADR 0014
+// is the operational exit.
 func (s *Service) ConfirmByClient(ctx context.Context, userID, sessionID string) (domain.Payment, error) {
 	if _, err := s.holdGate(ctx, userID, sessionID); err != nil {
 		return domain.Payment{}, err
@@ -203,7 +203,7 @@ func (s *Service) ConfirmByClient(ctx context.Context, userID, sessionID string)
 // provider's truth about money that moved. A capture arriving after hold
 // expiry is booked as captured, and booking confirm's expiry hard-NO
 // (ADR 0006) keeps the seat unsellable-to-this-session — the payment row
-// is the audit trail, refunds are the deferred operational exit.
+// is the audit trail for refund review (ADR 0014).
 func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signatureHeader string) (WebhookOutcome, error) {
 	ev, err := s.gateway.VerifyWebhook(rawBody, signatureHeader)
 	if err != nil {
