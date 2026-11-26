@@ -175,3 +175,30 @@ of the same event ID, one consumer claim and one notification. During incident
 recovery, restore connectivity and let the relay process pending rows.
 [ADR 0009](adr/0009-messaging-rabbitmq-outbox-relay.md) describes the
 claim-before-notify crash window.
+
+## Diagnose a Redis connectivity failure
+
+Check the API directly with `GET /healthz` and `GET /readyz`. During the
+Redis outage drill, liveness returns 200 and readiness returns 503, with
+Postgres reporting `ok` and Redis reporting a connection error. A load
+balancer using readiness can drain the instance, so its external behavior
+can differ from the direct API observations below.
+
+| Direct API request | Expected result while Redis is unreachable |
+|---|---|
+| Owner repeats confirmation for a committed session | 200 with the original booking from Postgres |
+| A different user repeats that confirmation | 404 with `not_found` |
+| Owner requests a fresh hold for an available seat | 500 with the current `internal_error` envelope |
+
+Restore Redis connectivity and check readiness again. The API should
+return 200 without a process restart. Read the screening's seat map to
+verify the committed seat remains booked. For the connection failure
+exercised here, the attempted new hold never reached Redis, so its seat
+remains available and can be held and released. A timeout *after* a write
+reaches Redis is a different failure mode.
+
+To reproduce, run `make test-e2e`. Within its disposable Compose project,
+the runner moves the Redis TCP listener off the mapped port and closes
+existing client connections, then restores the listener. Redis data
+survives the drill. The final database check verifies that confirmation
+replay produced no extra booking or outbox event.

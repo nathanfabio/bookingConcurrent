@@ -114,6 +114,8 @@ and uses the development seed catalog. It removes its own containers and
 volume after the run. The journey drives checkout through HTTP and waits
 for the worker's notification log for the confirmed booking ID. It exercises
 a broker outage, worker restart, relay retry and consumer deduplication.
+It also tests a Redis connectivity failure during a new hold and a replay
+of an already confirmed booking.
 See the [diagnostic query and drill](docs/operations.md#diagnose-a-delayed-booking-notification).
 
 CI runs this journey separately and sets `REQUIRE_TEST_INFRA=1` for the

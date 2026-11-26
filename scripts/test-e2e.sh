@@ -41,7 +41,9 @@ export RABBITMQ_URL="amqp://booking:booking-dev-password@$addr/booking"
 export HTTP_ADDR="127.0.0.1:$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
 export WORKER_RELAY_POLL_INTERVAL=250ms
 export WORKER_REFUND_POLL_INTERVAL=250ms
-export E2E_CONFIRMED_ID="$work/confirmed-id"
+export E2E_CHECKOUT="$work/checkout.json"
+# The outage probes log both test users back in across process boundaries.
+export RATE_LIMIT_AUTH_BURST=8
 export E2E_WORKER_LOG="$work/worker.log"
 "$work/api" >"$work/api.log" 2>&1 &
 api_pid=$!
@@ -77,15 +79,15 @@ wait_for "initial subscription" grep -q 'consumer subscribed' "$E2E_WORKER_LOG"
 # port stays fixed so the restarted worker uses precisely the same URL.
 rabbitctl=( "${compose[@]}" exec -T rabbitmq rabbitmqctl --timeout 30 )
 "${rabbitctl[@]}" stop_app
-"$work/journey" -test.timeout=120s >"$work/journey.log" 2>&1 &
+"$work/journey" -test.run='^TestBookingJourney$' -test.timeout=120s >"$work/journey.log" 2>&1 &
 journey_pid=$!
 wait_for "failed publication while broker is offline" grep -q 'outbox relay pass failed' "$E2E_WORKER_LOG"
 
-wait_for "booked seat visible through HTTP during outage" test -s "$E2E_CONFIRMED_ID"
+wait_for "booked seat visible through HTTP during outage" test -s "$E2E_CHECKOUT"
 
 # This project has one checkout. Capture its event identity and reuse it
 # for every subsequent assertion, including the controlled duplicate.
-event_id=$("${psql[@]}" -v booking_id="$(cat "$E2E_CONFIRMED_ID")" <<'SQL'
+event_id=$("${psql[@]}" -v booking_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["Booking"]["ID"])' <"$E2E_CHECKOUT")" <<'SQL'
   SELECT o.event_id FROM outbox o
   JOIN confirmed_bookings b ON b.id::text=o.payload->>'booking_id'
   WHERE b.id=:'booking_id' AND b.status='confirmed' AND o.event_type='BookingConfirmed'
@@ -134,6 +136,17 @@ wait_for "republished event and original claim" assert_delivery
   exit 1
 }
 echo "RabbitMQ outage and recovery verified for event $event_id"
+
+# Move Redis off its published TCP port and disconnect established clients.
+# The alternate listener is reachable only inside this disposable project.
+redisctl=( "${compose[@]}" exec -T redis redis-cli -e )
+"${redisctl[@]}" CONFIG SET port 6380
+"${redisctl[@]}" -p 6380 CLIENT KILL TYPE normal SKIPME yes
+"$work/journey" -test.run='^TestRedisUnavailable$' -test.timeout=60s
+"${redisctl[@]}" -p 6380 CONFIG SET port 6379
+wait_for "API ready after Redis reconnects" curl -fsS --max-time 3 "http://$HTTP_ADDR/readyz"
+"$work/journey" -test.run='^TestRedisRecovered$' -test.timeout=60s
+wait_for "original sale and event after Redis recovery" assert_delivery
 
 # The operator's entry point is SQL. Seed a reviewed expired capture in this
 # disposable database, then observe the production worker finish the request.
