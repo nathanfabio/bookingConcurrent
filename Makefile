@@ -90,3 +90,7 @@ tidy: ## go mod tidy
 .PHONY: test-e2e
 test-e2e: ## Run the HTTP booking journey with isolated Compose services
 	bash scripts/test-e2e.sh
+
+.PHONY: test-contention
+test-contention: ## Measure concurrent HTTP holds against isolated Redis and Postgres
+	bash scripts/test-e2e.sh contention

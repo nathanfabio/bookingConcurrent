@@ -131,3 +131,22 @@ See the [restore rehearsal and recovery boundary](docs/operations.md#rehearse-a-
 The queue-loss drill verifies manual republication of a broker-confirmed event
 and consumer deduplication using the original event ID.
 [Recovery procedure](docs/operations.md#recover-a-confirmed-publication-after-queue-loss).
+
+### Measure HTTP hold contention
+
+Run `make test-contention` to compare 32 authenticated buyers claiming one
+seat with 32 buyers claiming distinct seats. The runner uses an isolated
+Compose project, race-enabled Go binaries, real Postgres and Redis, and
+higher per-IP bursts for the shared load-driver address. It registers
+buyers and obtains tokens before measuring. Each scenario runs four bursts
+of 32 requests, alternating scenario order between rounds. Winners release
+their holds between bursts.
+
+The report counts HTTP outcomes, requires the expected number of held seats
+in the public map, and reports requests per second across the measured burst
+windows. Client p50 and p95 use nearest ranks across all 128 responses per
+scenario, from request start through reading the body. Mean time to first
+byte includes connection acquisition, scheduling, network and server work.
+Registration, map checks and release are outside the timing windows.
+Compare runs on the same host with the same instrumentation. These short
+bursts measure local behavior at a concurrency of 32.

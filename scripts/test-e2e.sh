@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 suffix=${work##*.}
 compose=(docker compose -p "booking-e2e-${suffix,,}" -f test/e2e/compose.yaml)
+mode=${1:-journey}
 api_pid=
 worker_pid=
 journey_pid=
@@ -44,6 +45,10 @@ export WORKER_REFUND_POLL_INTERVAL=250ms
 export E2E_CHECKOUT="$work/checkout.json"
 # The outage probes log both test users back in across process boundaries.
 export RATE_LIMIT_AUTH_BURST=8
+if [[ "$mode" == contention ]]; then
+  # The load driver shares one loopback IP across all authenticated buyers.
+  export RATE_LIMIT_GENERAL_BURST=512 RATE_LIMIT_AUTH_BURST=32 RATE_LIMIT_HOLD_BURST=256
+fi
 export E2E_WORKER_LOG="$work/worker.log"
 "$work/api" >"$work/api.log" 2>&1 &
 api_pid=$!
@@ -53,6 +58,10 @@ for ((i=0; i<100; i++)); do
   sleep 0.2
 done
 curl -fsS --max-time 2 "http://$HTTP_ADDR/readyz" >/dev/null
+if [[ "$mode" == contention ]]; then
+  "$work/journey" -test.run='^TestHTTPHoldContention$' -test.v -test.timeout=180s
+  exit 0
+fi
 psql=( "${compose[@]}" exec -T postgres psql -XAtq -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" )
 
 start_worker() {
@@ -210,6 +219,10 @@ restore_target() {
 stop_apps
 restore_target "$work/booking.dump" booking_restored 1
 export ENV=production
+if [[ "$mode" == contention ]]; then
+  # The load driver shares one loopback IP across all authenticated buyers.
+  export RATE_LIMIT_GENERAL_BURST=512 RATE_LIMIT_AUTH_BURST=32 RATE_LIMIT_HOLD_BURST=256
+fi
 export E2E_WORKER_LOG="$work/restored-worker.log"
 "$work/api" >"$work/restored-api.log" 2>&1 &
 api_pid=$!
@@ -232,6 +245,10 @@ echo "Postgres restore verified: original booking, event and sandbox refund rece
 stop_apps
 restore_target "$work/pending.dump" booking_pending_restore 2
 [[ "$(pending_event)" == "$event_id" ]] || { echo "archive missing original pending event" >&2; exit 1; }
+if [[ "$mode" == contention ]]; then
+  # The load driver shares one loopback IP across all authenticated buyers.
+  export RATE_LIMIT_GENERAL_BURST=512 RATE_LIMIT_AUTH_BURST=32 RATE_LIMIT_HOLD_BURST=256
+fi
 export E2E_WORKER_LOG="$work/pending-restore-worker.log"
 start_worker
 wait_for "restored pending event published and claimed" assert_delivery
@@ -247,6 +264,10 @@ kill -TERM "$worker_pid"
 wait "$worker_pid"
 worker_pid=
 restore_target "$work/pending.dump" booking_queue_loss 3
+if [[ "$mode" == contention ]]; then
+  # The load driver shares one loopback IP across all authenticated buyers.
+  export RATE_LIMIT_GENERAL_BURST=512 RATE_LIMIT_AUTH_BURST=32 RATE_LIMIT_HOLD_BURST=256
+fi
 export E2E_WORKER_LOG="$work/queue-loss-worker.log"
 start_worker --without-consumer
 publication_stamp() {
